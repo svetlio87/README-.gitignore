@@ -1,0 +1,43 @@
+workflows:
+  build-ios-unsigned:
+    name: Build iOS (Unsigned IPA)
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      xcode: latest
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+        - pattern: master
+          include: true
+    scripts:
+      - name: Install XcodeGen
+        script: |
+          command -v xcodegen || brew install xcodegen
+      - name: Generate Xcode project
+        script: |
+          xcodegen generate
+      - name: Build (unsigned)
+        script: |
+          xcodebuild \
+            -project DarbukaFX.xcodeproj \
+            -scheme DarbukaFX \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+      - name: Package IPA
+        script: |
+          rm -rf Payload DarbukaFX.ipa
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/DarbukaFX.app Payload/
+          zip -qry DarbukaFX.ipa Payload
+    artifacts:
+      - DarbukaFX.ipa
