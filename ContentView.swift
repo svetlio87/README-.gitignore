@@ -32,7 +32,7 @@ final class MixerModel: ObservableObject {
         requestMic { [weak self] granted in
             DispatchQueue.main.async {
                 guard let self else { return }
-                guard granted else { self.error = "Mikrofon izni verilmedi"; return }
+                guard granted else { self.error = "Microphone permission denied"; return }
                 do {
                     try self.engine.start()
                     self.push()
@@ -68,7 +68,24 @@ final class MixerModel: ObservableObject {
     }
 }
 
-// MARK: - Bileşenler
+// MARK: - Components
+
+enum FXPage: Int, CaseIterable, Identifiable {
+    case input, gate, eq, compressor, reverb, limiter
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .input: return "Input"
+        case .gate: return "Gate"
+        case .eq: return "EQ"
+        case .compressor: return "Compressor"
+        case .reverb: return "Reverb"
+        case .limiter: return "Limiter"
+        }
+    }
+}
 
 struct Param: View {
     let title: String
@@ -79,7 +96,11 @@ struct Param: View {
 
     var body: some View {
         HStack {
-            Text(title).font(.subheadline).frame(width: 84, alignment: .leading)
+            Text(title)
+                .font(.subheadline)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+                .frame(width: 90, alignment: .leading)
             if log {
                 Slider(value: Binding(get: { Foundation.log(value) },
                                       set: { value = exp($0) }),
@@ -89,7 +110,7 @@ struct Param: View {
             }
             Text(String(format: value >= 1000 ? "%.0f" : "%.1f", value) + unit)
                 .font(.caption.monospacedDigit())
-                .frame(width: 72, alignment: .trailing)
+                .frame(width: 68, alignment: .trailing)
         }
     }
 }
@@ -115,68 +136,116 @@ struct Meter: View {
     }
 }
 
-// MARK: - Ekran
+// MARK: - Screen
 
 struct ContentView: View {
     @StateObject private var vm = MixerModel()
+    @State private var selectedPage: FXPage = .input
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                GroupBox("Giriş") {
-                    Param(title: "Gain", value: $vm.s.gain, range: 0...40, unit: " dB")
-                    Param(title: "High-pass", value: $vm.s.hpf, range: 40...150, unit: " Hz")
-                }
-                GroupBox("Gate") {
-                    Param(title: "Threshold", value: $vm.s.gateThr, range: -70 ... -20, unit: " dB")
-                    Param(title: "Hysteresis", value: $vm.s.gateHyst, range: 0...10, unit: " dB")
-                    Param(title: "Attack", value: $vm.s.gateAtk, range: 0.1...5, unit: " ms")
-                    Param(title: "Hold", value: $vm.s.gateHold, range: 5...100, unit: " ms")
-                    Param(title: "Release", value: $vm.s.gateRel, range: 20...300, unit: " ms")
-                }
-                GroupBox("EQ") {
-                    ForEach(0..<4, id: \.self) { i in
-                        VStack {
-                            Text("Bant \(i + 1)").font(.caption).foregroundStyle(.secondary)
-                            Param(title: "Frekans", value: $vm.s.eq[i].freq, range: 20...12000, unit: " Hz", log: true)
-                            Param(title: "Gain", value: $vm.s.eq[i].gain, range: -12...12, unit: " dB")
-                            Param(title: "Q", value: $vm.s.eq[i].q, range: 0.3...8)
-                        }
-                        if i < 3 { Divider() }
-                    }
-                }
-                GroupBox("Kompresör") {
-                    Param(title: "Threshold", value: $vm.s.compThr, range: -40...0, unit: " dB")
-                    Param(title: "Ratio", value: $vm.s.compRatio, range: 1...6, unit: ":1")
-                    Param(title: "Attack", value: $vm.s.compAtk, range: 5...50, unit: " ms")
-                    Param(title: "Release", value: $vm.s.compRel, range: 40...300, unit: " ms")
-                    Param(title: "Makeup", value: $vm.s.compMakeup, range: 0...12, unit: " dB")
-                }
-                GroupBox("Reverb") {
-                    Param(title: "Decay", value: $vm.s.decay, range: 0.3...3, unit: " sn")
-                    Param(title: "Pre-delay", value: $vm.s.preDelay, range: 0...50, unit: " ms")
-                    Param(title: "Mix", value: $vm.s.mixPct, range: 0...40, unit: " %")
-                }
-                GroupBox("Limiter") {
-                    Param(title: "Ceiling", value: $vm.s.ceiling, range: -6...0, unit: " dB")
-                }
-            }
-            .padding()
-        }
-        .safeAreaInset(edge: .top) {
-            VStack(spacing: 8) {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
                 HStack {
-                    Button(vm.running ? "Durdur" : "Başlat") { vm.toggle() }
+                    Button(vm.running ? "Stop" : "Start") { vm.toggle() }
                         .buttonStyle(.borderedProminent)
                         .tint(vm.running ? .red : .accentColor)
                     Meter(read: vm.peak)
                 }
+                fxSelectorBar
                 if let e = vm.error {
                     Text(e).font(.caption).foregroundStyle(.red)
                 }
             }
             .padding()
             .background(.bar)
+
+            Divider()
+
+            TabView(selection: $selectedPage) {
+                ForEach(FXPage.allCases) { page in
+                    ScrollView {
+                        GroupBox(page.title) {
+                            VStack(spacing: 12) {
+                                pageContent(page)
+                            }
+                            .padding(.top, 4)
+                        }
+                        .padding()
+                    }
+                    .tag(page)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+        }
+    }
+
+    private var fxSelectorBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(FXPage.allCases) { page in
+                        let isSelected = page == selectedPage
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                selectedPage = page
+                            }
+                        } label: {
+                            Text(page.title)
+                                .font(.subheadline.weight(.medium))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(
+                                    Capsule().fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.15))
+                                )
+                                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        }
+                        .buttonStyle(.plain)
+                        .id(page)
+                    }
+                }
+            }
+            .onChange(of: selectedPage) { page in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(page, anchor: .center)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func pageContent(_ page: FXPage) -> some View {
+        switch page {
+        case .input:
+            Param(title: "Gain", value: $vm.s.gain, range: 0...40, unit: " dB")
+            Param(title: "High-pass", value: $vm.s.hpf, range: 40...150, unit: " Hz")
+        case .gate:
+            Param(title: "Threshold", value: $vm.s.gateThr, range: -70 ... -20, unit: " dB")
+            Param(title: "Hysteresis", value: $vm.s.gateHyst, range: 0...10, unit: " dB")
+            Param(title: "Attack", value: $vm.s.gateAtk, range: 0.1...5, unit: " ms")
+            Param(title: "Hold", value: $vm.s.gateHold, range: 5...100, unit: " ms")
+            Param(title: "Release", value: $vm.s.gateRel, range: 20...300, unit: " ms")
+        case .eq:
+            ForEach(0..<4, id: \.self) { i in
+                VStack(spacing: 8) {
+                    Text("Band \(i + 1)").font(.caption).foregroundStyle(.secondary)
+                    Param(title: "Frequency", value: $vm.s.eq[i].freq, range: 20...12000, unit: " Hz", log: true)
+                    Param(title: "Gain", value: $vm.s.eq[i].gain, range: -12...12, unit: " dB")
+                    Param(title: "Q", value: $vm.s.eq[i].q, range: 0.3...8)
+                }
+                if i < 3 { Divider() }
+            }
+        case .compressor:
+            Param(title: "Threshold", value: $vm.s.compThr, range: -40...0, unit: " dB")
+            Param(title: "Ratio", value: $vm.s.compRatio, range: 1...6, unit: ":1")
+            Param(title: "Attack", value: $vm.s.compAtk, range: 5...50, unit: " ms")
+            Param(title: "Release", value: $vm.s.compRel, range: 40...300, unit: " ms")
+            Param(title: "Makeup", value: $vm.s.compMakeup, range: 0...12, unit: " dB")
+        case .reverb:
+            Param(title: "Decay", value: $vm.s.decay, range: 0.3...3, unit: " s")
+            Param(title: "Pre-delay", value: $vm.s.preDelay, range: 0...50, unit: " ms")
+            Param(title: "Mix", value: $vm.s.mixPct, range: 0...40, unit: " %")
+        case .limiter:
+            Param(title: "Ceiling", value: $vm.s.ceiling, range: -6...0, unit: " dB")
         }
     }
 }

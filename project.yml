@@ -15,7 +15,7 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Darbuka FX
-        NSMicrophoneUsageDescription: Darbuka sesini işlemek için mikrofon gerekli.
+        NSMicrophoneUsageDescription: Microphone access is required to process darbuka audio.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
