@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct DarbukaFXApp: App {
+struct SManMixerFXApp: App {
     var body: some Scene {
         WindowGroup { ContentView() }
     }

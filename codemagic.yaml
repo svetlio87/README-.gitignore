@@ -1,6 +1,6 @@
 workflows:
   build-ios-unsigned:
-    name: Build iOS (Unsigned IPA)
+    name: Build S-Man Mixer FX (Unsigned IPA)
     max_build_duration: 30
     instance_type: mac_mini_m2
     environment:
@@ -23,8 +23,8 @@ workflows:
       - name: Build (unsigned)
         script: |
           xcodebuild \
-            -project DarbukaFX.xcodeproj \
-            -scheme DarbukaFX \
+            -project SManMixerFX.xcodeproj \
+            -scheme SManMixerFX \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -35,9 +35,9 @@ workflows:
             build
       - name: Package IPA
         script: |
-          rm -rf Payload DarbukaFX.ipa
+          rm -rf Payload SManMixerFX.ipa
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/DarbukaFX.app Payload/
-          zip -qry DarbukaFX.ipa Payload
+          cp -R build/Build/Products/Release-iphoneos/SManMixerFX.app Payload/
+          zip -qry SManMixerFX.ipa Payload
     artifacts:
-      - DarbukaFX.ipa
+      - SManMixerFX.ipa

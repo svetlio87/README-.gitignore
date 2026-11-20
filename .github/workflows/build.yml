@@ -20,8 +20,8 @@ jobs:
       - name: Build (unsigned)
         run: |
           xcodebuild \
-            -project DarbukaFX.xcodeproj \
-            -scheme DarbukaFX \
+            -project SManMixerFX.xcodeproj \
+            -scheme SManMixerFX \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -33,12 +33,12 @@ jobs:
 
       - name: Package IPA
         run: |
-          rm -rf Payload DarbukaFX.ipa
+          rm -rf Payload SManMixerFX.ipa
           mkdir -p Payload
-          cp -R build/Build/Products/Release-iphoneos/DarbukaFX.app Payload/
-          zip -qry DarbukaFX.ipa Payload
+          cp -R build/Build/Products/Release-iphoneos/SManMixerFX.app Payload/
+          zip -qry SManMixerFX.ipa Payload
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DarbukaFX-ipa
-          path: DarbukaFX.ipa
+          name: SManMixerFX-ipa
+          path: SManMixerFX.ipa
