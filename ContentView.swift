@@ -340,34 +340,41 @@ struct VerticalStudioFader: View {
     }
 }
 
-// MARK: - 1. S-Man Gate Page (Scrolling Gate Graph + FX Volume)
+// MARK: - 1. S-Man Gate Page (Interactive Transfer Curve + Hysteresis + FX Volume)
 
 struct GatePageView: View {
     @ObservedObject var vm: DarbukaEngine
+    @State private var dragNode: Int? = nil
+
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
-                SectionHeader(title: "S-Man Gate", subtitle: "Noise gate & stage cleanup", accent: Color(hex: 0x3DDC97), isOn: $vm.params.gateOn)
+                SectionHeader(title: "S-Man Gate", subtitle: "Transfer curve + stage cleanup", accent: Color(hex: 0x3DDC97), isOn: $vm.params.gateOn)
 
-                gateEnvelopeGraph.frame(height: 130)
+                gateCurveCard.frame(height: 170)
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text(vm.params.gateOn ? (vm.gateOpen ? "OPEN" : "CLOSED") : "BYPASS")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(vm.gateOpen ? Color(hex: 0x3DDC97) : Color(hex: 0x8B93A7))
+                            .foregroundColor(vm.params.gateOn ? (vm.gateOpen ? Color(hex: 0x3DDC97) : Color(hex: 0xFF5A5A)) : Color(hex: 0x8B93A7))
                         Spacer()
-                        Text(String(format: "%.1f dB", vm.inputLevelDb))
+                        Text(String(format: "RED -%.1f dB", vm.params.gateOn ? vm.gateGrDb : 0))
+                            .font(.system(size: 11, weight: .bold).monospacedDigit())
+                            .foregroundColor(Color(hex: 0x3DDC97))
+                        Text(String(format: "· IN %.1f dB", vm.inputLevelDb))
                             .font(.system(size: 11).monospacedDigit())
                             .foregroundColor(Color(hex: 0x8B93A7))
                     }
-                    MeterBar(levelNorm: CGFloat(max(0, min(1, (vm.inputLevelDb + 60) / 60))),
-                             markerNorm: CGFloat((vm.params.gateThreshDb + 60) / 60),
+                    MeterBar(levelNorm: CGFloat(max(0, min(1, (vm.inputLevelDb + 70) / 70))),
+                             markerNorm: CGFloat(max(0, min(1, (vm.params.gateThreshDb + 70) / 70))),
                              color: Color(hex: 0x3DDC97))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
 
                 VStack(spacing: 10) {
-                    ParamSlider(title: "THRESH", value: $vm.params.gateThreshDb, range: -70...(-20), tint: Color(hex: 0x3DDC97), text: String(format: "%.1f dB", vm.params.gateThreshDb))
+                    ParamSlider(title: "THRESH", value: $vm.params.gateThreshDb, range: -70...0, tint: Color(hex: 0x3DDC97), text: String(format: "%.1f dB", vm.params.gateThreshDb))
+                    ParamSlider(title: "RANGE / FLOOR", value: $vm.params.gateFloorDb, range: -70...0, tint: Color(hex: 0x31C6FF),
+                                text: vm.params.gateFloorDb <= -69.5 ? "-70 dB (Full)" : String(format: "%.1f dB", vm.params.gateFloorDb))
                     ParamSlider(title: "HYST", value: $vm.params.gateHystDb, range: 0...10, tint: Color(hex: 0x3DDC97), text: String(format: "%.1f dB", vm.params.gateHystDb))
                     ParamSlider(title: "ATTACK", value: $vm.params.gateAttackMs, range: 0.1...5, tint: Color(hex: 0x3DDC97), text: String(format: "%.1f ms", vm.params.gateAttackMs))
                     ParamSlider(title: "HOLD", value: $vm.params.gateHoldMs, range: 5...100, tint: Color(hex: 0x3DDC97), text: "\(Int(vm.params.gateHoldMs)) ms")
@@ -378,66 +385,122 @@ struct GatePageView: View {
         }
     }
 
-    private var gateEnvelopeGraph: some View {
-        Canvas { ctx, size in
-            let bg = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 16)
-            ctx.fill(bg, with: .color(Color(hex: 0x0B0E14)))
+    private var gateCurveCard: some View {
+        GeometryReader { geo in
+            let w = geo.size.width, h = geo.size.height
+            let pad: CGFloat = 20
+            let xOf: (Float) -> CGFloat = { db in pad + CGFloat((clampF(db, -70, 0) + 70) / 70) * (w - 2 * pad) }
+            let yOf: (Float) -> CGFloat = { db in h - pad - CGFloat((clampF(db, -70, 0) + 70) / 70) * (h - 2 * pad) }
+            let openDb = clampF(vm.params.gateThreshDb, -70, 0)
+            let closeDb = clampF(openDb - vm.params.gateHystDb, -70, openDb)
+            let floorDb = clampF(vm.params.gateFloorDb, -70, 0)
+            let dropYDb = clampF(openDb + floorDb, -70, openDb)
 
-            let yOf: (Float) -> CGFloat = { db in
-                let norm = clampF((db + 70) / 70, 0, 1)
-                return size.height - 10 - CGFloat(norm) * (size.height - 20)
-            }
+            ZStack {
+                RoundedRectangle(cornerRadius: 16).fill(Color(hex: 0x0B0E14))
+                Canvas { ctx, _ in
+                    for d in [-56, -42, -28, -14, 0] {
+                        var v = Path()
+                        v.move(to: CGPoint(x: xOf(Float(d)), y: yOf(-70)))
+                        v.addLine(to: CGPoint(x: xOf(Float(d)), y: yOf(0)))
+                        ctx.stroke(v, with: .color(Color.white.opacity(d == 0 ? 0.14 : 0.08)), lineWidth: 1)
 
-            for dbLine in [-60, -40, -20] {
-                let y = yOf(Float(dbLine))
-                var g = Path()
-                g.move(to: CGPoint(x: 0, y: y))
-                g.addLine(to: CGPoint(x: size.width, y: y))
-                ctx.stroke(g, with: .color(Color.white.opacity(0.06)), lineWidth: 1)
-            }
+                        var hz = Path()
+                        hz.move(to: CGPoint(x: xOf(-70), y: yOf(Float(d))))
+                        hz.addLine(to: CGPoint(x: xOf(0), y: yOf(Float(d))))
+                        ctx.stroke(hz, with: .color(Color.white.opacity(d == 0 ? 0.14 : 0.08)), lineWidth: 1)
 
-            let hist = vm.gateHistory
-            let openHist = vm.gateOpenHistory
-            if hist.count >= 2 {
-                var fillPath = Path()
-                var trace = Path()
-                for i in hist.indices {
-                    let x = CGFloat(i) / CGFloat(hist.count - 1) * size.width
-                    let y = yOf(hist[i])
-                    if i == 0 {
-                        trace.move(to: CGPoint(x: x, y: y))
-                        fillPath.move(to: CGPoint(x: x, y: size.height))
-                        fillPath.addLine(to: CGPoint(x: x, y: y))
-                    } else {
-                        trace.addLine(to: CGPoint(x: x, y: y))
-                        fillPath.addLine(to: CGPoint(x: x, y: y))
+                        if d != 0 {
+                            ctx.draw(Text("\(d)").font(.system(size: 8)).foregroundColor(Color(hex: 0x8B93A7)),
+                                     at: CGPoint(x: xOf(Float(d)), y: h - 8), anchor: .center)
+                        }
                     }
-                    if i < openHist.count && openHist[i] && vm.params.gateOn {
-                        let dot = Path(CGRect(x: x - 1.5, y: size.height - 5, width: 3, height: 3))
-                        ctx.fill(dot, with: .color(Color(hex: 0x3DDC97)))
+
+                    // 1:1 diagonal reference
+                    var ref = Path()
+                    ref.move(to: CGPoint(x: xOf(-70), y: yOf(-70)))
+                    ref.addLine(to: CGPoint(x: xOf(0), y: yOf(0)))
+                    ctx.stroke(ref, with: .color(Color.white.opacity(0.16)), lineWidth: 1)
+
+                    // Shaded Hysteresis band
+                    if vm.params.gateHystDb > 0.2 {
+                        let hystRect = CGRect(
+                            x: xOf(closeDb),
+                            y: yOf(0),
+                            width: max(0, xOf(openDb) - xOf(closeDb)),
+                            height: yOf(-70) - yOf(0)
+                        )
+                        ctx.fill(Path(hystRect), with: .color(Color(hex: 0x3DDC97).opacity(0.12)))
+
+                        let closeFloorDb = clampF(closeDb + floorDb, -70, closeDb)
+                        let closeStartX = clampF(-70 - floorDb, -70, closeDb)
+                        var hystCurve = Path()
+                        hystCurve.move(to: CGPoint(x: xOf(-70), y: yOf(-70)))
+                        if closeStartX > -70 {
+                            hystCurve.addLine(to: CGPoint(x: xOf(closeStartX), y: yOf(-70)))
+                        }
+                        hystCurve.addLine(to: CGPoint(x: xOf(closeDb), y: yOf(closeFloorDb)))
+                        hystCurve.addLine(to: CGPoint(x: xOf(closeDb), y: yOf(closeDb)))
+                        hystCurve.addLine(to: CGPoint(x: xOf(openDb), y: yOf(openDb)))
+                        ctx.stroke(hystCurve, with: .color(Color(hex: 0x3DDC97).opacity(0.55)),
+                                   style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
+                    }
+
+                    // Main Gate transfer curve (accounts for Range/Floor attenuation)
+                    let startX = clampF(-70 - floorDb, -70, openDb)
+                    var curve = Path()
+                    curve.move(to: CGPoint(x: xOf(-70), y: yOf(-70)))
+                    if startX > -70 {
+                        curve.addLine(to: CGPoint(x: xOf(startX), y: yOf(-70)))
+                    }
+                    curve.addLine(to: CGPoint(x: xOf(openDb), y: yOf(dropYDb)))
+                    curve.addLine(to: CGPoint(x: xOf(openDb), y: yOf(openDb)))
+                    curve.addLine(to: CGPoint(x: xOf(0), y: yOf(0)))
+                    ctx.stroke(curve, with: .color(vm.params.gateOn ? Color(hex: 0x3DDC97) : .gray), lineWidth: 3)
+
+                    // Live smooth input/output signal dot
+                    if vm.isRunning {
+                        let inDb = clampF(vm.inputLevelDb, -70, 0)
+                        let outDb = vm.params.gateOn ? clampF(inDb - vm.gateGrDb, -70, 0) : inDb
+                        let dotX = xOf(inDb), dotY = yOf(outDb)
+                        let dot = Path(ellipseIn: CGRect(x: dotX - 4.5, y: dotY - 4.5, width: 9, height: 9))
+                        ctx.fill(dot, with: .color(.white))
                     }
                 }
-                fillPath.addLine(to: CGPoint(x: size.width, y: size.height))
-                fillPath.closeSubpath()
-                ctx.fill(fillPath, with: .linearGradient(
-                    Gradient(colors: [Color(hex: 0x3DDC97).opacity(0.32), Color(hex: 0x3DDC97).opacity(0.03)]),
-                    startPoint: CGPoint(x: 0, y: 0),
-                    endPoint: CGPoint(x: 0, y: size.height)
-                ))
-                ctx.stroke(trace, with: .color(vm.params.gateOn ? Color(hex: 0x3DDC97) : .gray), lineWidth: 2.2)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                // Draggable Range/Floor Handle (bottom of step) & Threshold Handle (knee)
+                Circle()
+                    .fill(Color(hex: 0x31C6FF))
+                    .frame(width: 14, height: 14)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 1.8))
+                    .position(x: xOf(openDb), y: yOf(dropYDb))
+
+                Circle()
+                    .fill(Color(hex: 0x3DDC97))
+                    .frame(width: 16, height: 16)
+                    .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    .position(x: xOf(openDb), y: yOf(openDb))
             }
-
-            let thrY = yOf(vm.params.gateThreshDb)
-            var thrLine = Path()
-            thrLine.move(to: CGPoint(x: 0, y: thrY))
-            thrLine.addLine(to: CGPoint(x: size.width, y: thrY))
-            ctx.stroke(thrLine, with: .color(Color(hex: 0xFFD166)), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-
-            let closeY = yOf(vm.params.gateThreshDb - vm.params.gateHystDb)
-            var closeLine = Path()
-            closeLine.move(to: CGPoint(x: 0, y: closeY))
-            closeLine.addLine(to: CGPoint(x: size.width, y: closeY))
-            ctx.stroke(closeLine, with: .color(Color.white.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { val in
+                        if dragNode == nil {
+                            let dOpen = hypot(val.location.x - xOf(openDb), val.location.y - yOf(openDb))
+                            let dFloor = hypot(val.location.x - xOf(openDb), val.location.y - yOf(dropYDb))
+                            dragNode = (dFloor < dOpen && abs(val.location.y - yOf(openDb)) > 10) ? 1 : 0
+                        }
+                        if dragNode == 0 {
+                            let db = Float((val.location.x - pad) / max(w - 2 * pad, 1)) * 70 - 70
+                            vm.params.gateThreshDb = clampF(db, -70, 0)
+                        } else {
+                            let yDb = Float((h - pad - val.location.y) / max(h - 2 * pad, 1)) * 70 - 70
+                            vm.params.gateFloorDb = yDb <= -68.5 ? -70 : clampF(yDb - openDb, -70, 0)
+                        }
+                    }
+                    .onEnded { _ in dragNode = nil }
+            )
         }
     }
 }

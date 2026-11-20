@@ -12,9 +12,10 @@ final class DarbukaEngine: ObservableObject {
     @Published var estimatedRoundTripMs: Float = 6.0
     @Published var statusNote: String = ""
     @Published var audioRouteName: String = "iPhone Mic"
-    @Published var inputLevelDb: Float = -60
+    @Published var inputLevelDb: Float = -70
     @Published var outputLevelDb: Float = -60
     @Published var gateOpen: Bool = true
+    @Published var gateGrDb: Float = 0
     @Published var compGrDb: Float = 0
     @Published var limGrDb: Float = 0
     @Published var spectrumBins: [Float] = Array(repeating: 0, count: 24)
@@ -191,8 +192,9 @@ final class DarbukaEngine: ObservableObject {
         }
         fx = nil
         isRunning = false
-        inputLevelDb = -60
+        inputLevelDb = -70
         outputLevelDb = -60
+        gateGrDb = 0
         compGrDb = 0
         limGrDb = 0
         spectrumBins = Array(repeating: 0, count: 24)
@@ -273,11 +275,12 @@ final class DarbukaEngine: ObservableObject {
         meterTimer?.invalidate()
         meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self, let fx = self.fx else { return }
-            let inDb = clampF(linToDb(fx.inputPeak), -60, 0)
+            let inDb = clampF(linToDb(fx.inputPeak), -70, 0)
             let outDb = clampF(linToDb(fx.outputPeak), -60, 0)
             self.inputLevelDb = inDb
             self.outputLevelDb = outDb
             self.gateOpen = fx.gateOpen
+            self.gateGrDb = fx.gateGrDb
             self.compGrDb = fx.compGrDb
             self.limGrDb = fx.limGrDb
 

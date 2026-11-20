@@ -142,6 +142,7 @@ struct EngineParams: Codable, Equatable {
     var gateOn: Bool = false
     var gateThreshDb: Float = -50
     var gateHystDb: Float = 4
+    var gateFloorDb: Float = -70
     var gateAttackMs: Float = 0.5
     var gateHoldMs: Float = 30
     var gateReleaseMs: Float = 100
@@ -233,6 +234,103 @@ struct EngineParams: Codable, Equatable {
 
     // Ensemble
     var ensemble: EnsembleParams = EnsembleParams()
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case bufferSize, gainDb, masterDb, muted
+        case gateOn, gateThreshDb, gateHystDb, gateFloorDb, gateAttackMs, gateHoldMs, gateReleaseMs, gateLevelDb
+        case eqOn, hpfHz, eqLevelDb, eqBands
+        case compOn, compThreshDb, compRatio, compAttackMs, compReleaseMs, compMakeupDb, compLevelDb
+        case satOn, cabSimOn, satDriveDb, satWarmth, satToneHz, satMix, satLevelDb
+        case tapeOn, tapeDriveDb, tapeBumpDb, tapeToneHz, tapeFlutter, tapeMix, tapeLevelDb
+        case delayOn, delayMode, delaySync, delayTimeMs, delayBpm, delayDivision, delayFeedback
+        case delayLowCutHz, delayHighCutHz, delayEqLowDb, delayEqMidDb, delayEqHighDb, delayModWidth, delayMix, delayLevelDb
+        case revOn, revMode, revSize, revDecaySec, revPreDelayMs, revDampingHz, revLowCutHz
+        case revEqLowDb, revEqMidDb, revEqHighDb, revWidth, revMix, revLevelDb
+        case limiterCeilingDb, limiterLevelDb, ensemble
+    }
+
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let v = try c.decodeIfPresent(Int.self, forKey: .bufferSize) { bufferSize = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gainDb) { gainDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .masterDb) { masterDb = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .muted) { muted = v }
+
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .gateOn) { gateOn = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gateThreshDb) { gateThreshDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gateHystDb) { gateHystDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gateFloorDb) { gateFloorDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gateAttackMs) { gateAttackMs = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gateHoldMs) { gateHoldMs = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gateReleaseMs) { gateReleaseMs = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .gateLevelDb) { gateLevelDb = v }
+
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .eqOn) { eqOn = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .hpfHz) { hpfHz = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .eqLevelDb) { eqLevelDb = v }
+        if let v = try c.decodeIfPresent([EQBandParams].self, forKey: .eqBands) { eqBands = v }
+
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .compOn) { compOn = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .compThreshDb) { compThreshDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .compRatio) { compRatio = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .compAttackMs) { compAttackMs = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .compReleaseMs) { compReleaseMs = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .compMakeupDb) { compMakeupDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .compLevelDb) { compLevelDb = v }
+
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .satOn) { satOn = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .cabSimOn) { cabSimOn = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .satDriveDb) { satDriveDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .satWarmth) { satWarmth = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .satToneHz) { satToneHz = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .satMix) { satMix = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .satLevelDb) { satLevelDb = v }
+
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .tapeOn) { tapeOn = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .tapeDriveDb) { tapeDriveDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .tapeBumpDb) { tapeBumpDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .tapeToneHz) { tapeToneHz = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .tapeFlutter) { tapeFlutter = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .tapeMix) { tapeMix = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .tapeLevelDb) { tapeLevelDb = v }
+
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .delayOn) { delayOn = v }
+        if let v = try c.decodeIfPresent(DelayMode.self, forKey: .delayMode) { delayMode = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .delaySync) { delaySync = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayTimeMs) { delayTimeMs = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayBpm) { delayBpm = v }
+        if let v = try c.decodeIfPresent(DelayDivision.self, forKey: .delayDivision) { delayDivision = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayFeedback) { delayFeedback = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayLowCutHz) { delayLowCutHz = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayHighCutHz) { delayHighCutHz = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayEqLowDb) { delayEqLowDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayEqMidDb) { delayEqMidDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayEqHighDb) { delayEqHighDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayModWidth) { delayModWidth = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayMix) { delayMix = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .delayLevelDb) { delayLevelDb = v }
+
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .revOn) { revOn = v }
+        if let v = try c.decodeIfPresent(ReverbMode.self, forKey: .revMode) { revMode = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revSize) { revSize = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revDecaySec) { revDecaySec = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revPreDelayMs) { revPreDelayMs = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revDampingHz) { revDampingHz = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revLowCutHz) { revLowCutHz = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revEqLowDb) { revEqLowDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revEqMidDb) { revEqMidDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revEqHighDb) { revEqHighDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revWidth) { revWidth = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revMix) { revMix = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .revLevelDb) { revLevelDb = v }
+
+        if let v = try c.decodeIfPresent(Float.self, forKey: .limiterCeilingDb) { limiterCeilingDb = v }
+        if let v = try c.decodeIfPresent(Float.self, forKey: .limiterLevelDb) { limiterLevelDb = v }
+        if let v = try c.decodeIfPresent(EnsembleParams.self, forKey: .ensemble) { ensemble = v }
+    }
 }
 
 struct EnginePreset: Identifiable, Codable {
@@ -335,6 +433,7 @@ struct DSPConfig {
     var gateOn: Bool = false
     var gateThreshDb: Float = -50
     var gateHystDb: Float = 4
+    var gateFloorDb: Float = -70
     var gateAttackMs: Float = 0.5
     var gateHoldMs: Float = 30
     var gateReleaseMs: Float = 100
@@ -428,6 +527,7 @@ struct DSPConfig {
         self.gateOn = p.gateOn
         self.gateThreshDb = p.gateThreshDb
         self.gateHystDb = p.gateHystDb
+        self.gateFloorDb = p.gateFloorDb
         self.gateAttackMs = p.gateAttackMs
         self.gateHoldMs = p.gateHoldMs
         self.gateReleaseMs = p.gateReleaseMs
@@ -518,11 +618,13 @@ private final class StereoGate {
     private let sr: Float
     private let detDecay: Float
     private var openLin: Float = 0, closeLin: Float = 0
+    private var floorLin: Float = 0
     private var atk: Float = 0, rel: Float = 0
     private var holdSamples = 0, holdLeft = 0
     private var env: Float = 0, gain: Float = 1
     private var levelSmooth = SmoothFloat(1)
     private(set) var isOpen = false
+    private(set) var lastGrDb: Float = 0
 
     init(sr: Float) {
         self.sr = sr
@@ -532,6 +634,7 @@ private final class StereoGate {
     func update(_ cfg: DSPConfig) {
         openLin = dbToLin(cfg.gateThreshDb)
         closeLin = dbToLin(cfg.gateThreshDb - cfg.gateHystDb)
+        floorLin = cfg.gateFloorDb <= -69.5 ? 0 : dbToLin(cfg.gateFloorDb)
         atk = expf(-1 / (max(cfg.gateAttackMs, 0.05) * 0.001 * sr))
         rel = expf(-1 / (max(cfg.gateReleaseMs, 1) * 0.001 * sr))
         holdSamples = Int(cfg.gateHoldMs * 0.001 * sr)
@@ -540,7 +643,15 @@ private final class StereoGate {
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float, enabled: Bool) {
         let lvl = levelSmooth.next()
-        guard enabled else { isOpen = true; gain = 1; return }
+        if !enabled {
+            isOpen = true
+            holdLeft = 0
+            gain = flushDenormal(1 + atk * (gain - 1))
+            lastGrDb = clampF(-linToDb(gain), 0, 70)
+            let total = gain * lvl
+            l *= total; r *= total
+            return
+        }
         let a = max(abs(l), abs(r))
         env = flushDenormal(a > env ? a : env * detDecay)
         if isOpen {
@@ -551,9 +662,10 @@ private final class StereoGate {
             isOpen = true
             holdLeft = holdSamples
         }
-        let target: Float = isOpen ? 1 : 0
+        let target: Float = isOpen ? 1 : floorLin
         let c = target > gain ? atk : rel
         gain = flushDenormal(target + c * (gain - target))
+        lastGrDb = clampF(-linToDb(gain), 0, 70)
         let total = gain * lvl
         l *= total; r *= total
     }
@@ -1309,6 +1421,7 @@ final class FXChain {
     private(set) var inputPeak: Float = 0
     private(set) var outputPeak: Float = 0
     private(set) var gateOpen: Bool = true
+    private(set) var gateGrDb: Float = 0
     private(set) var compGrDb: Float = 0
     private(set) var limGrDb: Float = 0
     private(set) var inputMode: InputChannelMode = .in1
@@ -1408,6 +1521,7 @@ final class FXChain {
         inputPeak = max(inPk, inputPeak * 0.88)
         outputPeak = max(outPk, outputPeak * 0.88)
         gateOpen = gate.isOpen
+        gateGrDb = gate.lastGrDb
         compGrDb = comp.lastGrDb
         limGrDb = limiter.lastGrDb
     }
