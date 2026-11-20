@@ -63,8 +63,9 @@ final class DarbukaEngine: ObservableObject {
     private var termObserver: NSObjectProtocol?
     private var shouldKeepRunning = false
     private var isInBackground = false
+    private var isStartingAudio = false
     private let presetsKey = "s_man_mixer_fx_presets_v1"
-    private let lastStateKey = "s_man_mixer_fx_last_state_v1"
+    private let lastStateKey = "s_man_mixer_fx_last_state_v2"
 
     init() {
         loadLastState()
@@ -135,21 +136,34 @@ final class DarbukaEngine: ObservableObject {
     }
 
     private func startAudio() throws {
+        isStartingAudio = true
+        defer { isStartingAudio = false }
         stopAudio()
 
         let s = AVAudioSession.sharedInstance()
         try s.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker])
-        try s.setPreferredSampleRate(48000)
-        try s.setPreferredIOBufferDuration(Double(params.bufferSize) / 48000.0)
-        try s.setActive(true)
         if let usb = s.availableInputs?.first(where: { $0.portType == .usbAudio }) {
             try? s.setPreferredInput(usb)
         }
+        try? s.setPreferredSampleRate(48000)
         if s.maximumInputNumberOfChannels >= 2 {
             try? s.setPreferredInputNumberOfChannels(2)
         }
+        if s.maximumOutputNumberOfChannels >= 2 {
+            try? s.setPreferredOutputNumberOfChannels(2)
+        }
+        try? s.setPreferredIOBufferDuration(Double(params.bufferSize) / 48000.0)
+        try s.setActive(true)
 
         let sr = Float(s.sampleRate > 0 ? s.sampleRate : 48000)
+        try? s.setPreferredIOBufferDuration(Double(params.bufferSize) / Double(sr))
+        if s.maximumInputNumberOfChannels >= 2 && s.inputNumberOfChannels < 2 {
+            try? s.setPreferredInputNumberOfChannels(2)
+        }
+        if s.isInputGainSettable && s.inputGain < 0.85 {
+            try? s.setInputGain(0.85)
+        }
+
         let inCh = max(1, min(2, s.inputNumberOfChannels))
         actualSampleRate = sr
         hwInChannels = inCh
@@ -176,6 +190,10 @@ final class DarbukaEngine: ObservableObject {
         var on: UInt32 = 1
         try check(AudioUnitSetProperty(u, kAudioOutputUnitProperty_EnableIO,
                                        kAudioUnitScope_Input, 1, &on, 4))
+
+        var maxFrames = UInt32(DarbukaEngine.maxFrames)
+        try check(AudioUnitSetProperty(u, kAudioUnitProperty_MaximumFramesPerSlice,
+                                       kAudioUnitScope_Global, 0, &maxFrames, 4))
 
         func format(_ ch: UInt32) -> AudioStreamBasicDescription {
             AudioStreamBasicDescription(
@@ -277,7 +295,7 @@ final class DarbukaEngine: ObservableObject {
         routeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            guard let self else { return }
+            guard let self, !self.isStartingAudio else { return }
             self.refreshRouteInfo()
             if self.isRunning {
                 let s = AVAudioSession.sharedInstance()
@@ -513,6 +531,11 @@ final class DarbukaEngine: ObservableObject {
         let out = UnsafeMutableAudioBufferListPointer(ioData)
         let n = Int(frames)
         guard n > 0 && n <= DarbukaEngine.maxFrames else { silence(out); return noErr }
+
+        memset(inBufL, 0, n * 4)
+        if hwInChannels == 2 {
+            memset(inBufR, 0, n * 4)
+        }
 
         inList.unsafeMutablePointer.pointee.mNumberBuffers = UInt32(hwInChannels)
         inList[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: frames * 4,

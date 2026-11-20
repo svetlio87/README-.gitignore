@@ -172,9 +172,9 @@ struct MainPageView: View {
                         }
                     }
 
-                    HStack(spacing: 6) {
-                        ForEach([32, 64, 128], id: \.self) { sz in
-                            Button("Buffer \(sz)") { vm.setBufferSize(sz) }
+                    HStack(spacing: 5) {
+                        ForEach([32, 64, 128, 256, 512], id: \.self) { sz in
+                            Button("\(sz)") { vm.setBufferSize(sz) }
                                 .font(.system(size: 11, weight: .bold))
                                 .frame(maxWidth: .infinity).padding(.vertical, 7)
                                 .background(vm.params.bufferSize == sz ? Color(hex: 0x4AA3FF) : Color.white.opacity(0.06))

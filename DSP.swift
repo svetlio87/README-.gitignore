@@ -133,8 +133,8 @@ struct EnsembleParams: Codable, Equatable {
 }
 
 struct EngineParams: Codable, Equatable {
-    var bufferSize: Int = 64
-    var gainDb: Float = 0
+    var bufferSize: Int = 128
+    var gainDb: Float = 8
     var masterDb: Float = 0
     var muted: Bool = false
 
@@ -167,7 +167,7 @@ struct EngineParams: Codable, Equatable {
     var compRatio: Float = 2
     var compAttackMs: Float = 15
     var compReleaseMs: Float = 100
-    var compMakeupDb: Float = 0
+    var compMakeupDb: Float = 2
     var compLevelDb: Float = 0
 
     // Saturation
@@ -214,18 +214,18 @@ struct EngineParams: Codable, Equatable {
     }
 
     // Reverb + Wet EQ + Volume
-    var revOn: Bool = true
+    var revOn: Bool = false
     var revMode: ReverbMode = .hall
     var revSize: Float = 0.55
     var revDecaySec: Float = 1.2
     var revPreDelayMs: Float = 12
     var revDampingHz: Float = 7000
-    var revLowCutHz: Float = 180
+    var revLowCutHz: Float = 220
     var revEqLowDb: Float = 0
     var revEqMidDb: Float = 0
     var revEqHighDb: Float = 0
     var revWidth: Float = 0.8
-    var revMix: Float = 0.18
+    var revMix: Float = 0.14
     var revLevelDb: Float = 0
 
     // Limiter
@@ -426,7 +426,7 @@ struct BiquadFilter {
 struct DSPConfig {
     var inputMode: InputChannelMode = .in1
     var spectrumActive: Bool = false
-    var gainDb: Float = 0
+    var gainDb: Float = 8
     var masterDb: Float = 0
     var muted: Bool = false
 
@@ -454,7 +454,7 @@ struct DSPConfig {
     var compRatio: Float = 2
     var compAttackMs: Float = 15
     var compReleaseMs: Float = 100
-    var compMakeupDb: Float = 0
+    var compMakeupDb: Float = 2
     var compLevelDb: Float = 0
 
     var satOn: Bool = false
@@ -486,18 +486,18 @@ struct DSPConfig {
     var delayMix: Float = 0.2
     var delayLevelDb: Float = 0
 
-    var revOn: Bool = true
+    var revOn: Bool = false
     var revMode: ReverbMode = .hall
     var revSize: Float = 0.55
     var revDecaySec: Float = 1.2
     var revPreDelayMs: Float = 12
     var revDampingHz: Float = 7000
-    var revLowCutHz: Float = 180
+    var revLowCutHz: Float = 220
     var revEqLowDb: Float = 0
     var revEqMidDb: Float = 0
     var revEqHighDb: Float = 0
     var revWidth: Float = 0.8
-    var revMix: Float = 0.18
+    var revMix: Float = 0.14
     var revLevelDb: Float = 0
 
     var limiterCeilingDb: Float = -1
@@ -1037,9 +1037,10 @@ private struct AllpassUnit {
 
     @inline(__always) mutating func process(_ x: Float) -> Float {
         let b = buf[idx]
-        buf[idx] = flushDenormal(x + b * 0.5)
+        let y = b - 0.5 * x
+        buf[idx] = flushDenormal(x + 0.5 * y)
         idx += 1; if idx == size { idx = 0 }
-        return b - x
+        return y
     }
 }
 
@@ -1184,9 +1185,11 @@ private final class EnsembleVoiceDSP {
     private var bowEq = BiquadFilter()
 
     private var active = false
+    private var isUnison = true
     private var pitchRatio: Float = 1
+    private var detuneDepth: Float = 45
     private var gainL: Float = 0, gainR: Float = 0
-    private let windowSize: Float = 2048
+    private let windowSize: Float = 1024
 
     init(sr: Float, seedOffset: Float) {
         self.sr = sr
@@ -1198,9 +1201,11 @@ private final class EnsembleVoiceDSP {
 
     func update(_ v: EnsembleVoiceParams, detuneCents: Float, stereoWidth: Float, voiceIndex: Int) {
         active = v.isActive
+        isUnison = (v.octave == 0)
         let voiceOffset = (Float(voiceIndex) - 2.5) * 0.4
         let totalCents = Float(v.octave) * 100.0 + voiceOffset * detuneCents
         pitchRatio = powf(2.0, totalCents / 1200.0)
+        detuneDepth = clampF(detuneCents * 3.5, 10, 90)
 
         let p = clampF(v.pan * stereoWidth, -1, 1)
         let angle = (p + 1) * 0.25 * Float.pi
@@ -1229,8 +1234,8 @@ private final class EnsembleVoiceDSP {
         if lfoPhase > 2 * Float.pi { lfoPhase -= 2 * Float.pi }
 
         var y: Float
-        if abs(pitchRatio - 1.0) < 0.0005 {
-            let chorusDelay: Float = 160 + sinf(lfoPhase) * 45
+        if isUnison {
+            let chorusDelay: Float = 120 + sinf(lfoPhase) * detuneDepth
             y = readFrac(chorusDelay)
         } else {
             let phase2 = phase + 0.5
