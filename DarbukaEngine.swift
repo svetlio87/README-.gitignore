@@ -1,10 +1,16 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import UIKit
+
+private struct SavedEngineState: Codable {
+    var params: EngineParams
+    var inputMode: InputChannelMode
+}
 
 final class DarbukaEngine: ObservableObject {
-    @Published var params = EngineParams() { didSet { pushParams() } }
-    @Published var inputMode: InputChannelMode = .in1 { didSet { pushParams() } }
+    @Published var params = EngineParams() { didSet { pushParams(); scheduleSaveLastState() } }
+    @Published var inputMode: InputChannelMode = .in1 { didSet { pushParams(); scheduleSaveLastState() } }
     @Published var isRunning = false
     @Published var actualSampleRate: Float = 48000
     @Published var actualBufferFrames: Int = 64
@@ -46,43 +52,65 @@ final class DarbukaEngine: ObservableObject {
     private let inList = AudioBufferList.allocate(maximumBuffers: 2)
 
     private var meterTimer: Timer?
+    private var stateSaveTimer: Timer?
     private var tapTimes: [CFAbsoluteTime] = []
     private var routeObserver: NSObjectProtocol?
     private var interruptObserver: NSObjectProtocol?
+    private var mediaResetObserver: NSObjectProtocol?
+    private var bgObserver: NSObjectProtocol?
+    private var fgObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
+    private var termObserver: NSObjectProtocol?
+    private var shouldKeepRunning = false
+    private var isInBackground = false
     private let presetsKey = "s_man_mixer_fx_presets_v1"
+    private let lastStateKey = "s_man_mixer_fx_last_state_v1"
 
     init() {
+        loadLastState()
         loadSavedPresets()
         refreshRouteInfo()
         observeAudioNotifications()
+        setIdleTimerDisabled(true)
     }
 
     deinit {
+        stateSaveTimer?.invalidate()
         stopAudio()
         if let o = routeObserver { NotificationCenter.default.removeObserver(o) }
         if let o = interruptObserver { NotificationCenter.default.removeObserver(o) }
+        if let o = mediaResetObserver { NotificationCenter.default.removeObserver(o) }
+        if let o = bgObserver { NotificationCenter.default.removeObserver(o) }
+        if let o = fgObserver { NotificationCenter.default.removeObserver(o) }
+        if let o = activeObserver { NotificationCenter.default.removeObserver(o) }
+        if let o = termObserver { NotificationCenter.default.removeObserver(o) }
         inBufL.deallocate()
         inBufR.deallocate()
         free(inList.unsafeMutablePointer)
+        DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
     }
 
     // MARK: - Power & Session Control
 
     func togglePower() {
         if isRunning {
+            shouldKeepRunning = false
             stopAudio()
             return
         }
+        shouldKeepRunning = true
         requestMic { [weak self] granted in
             DispatchQueue.main.async {
                 guard let self else { return }
                 guard granted else {
+                    self.shouldKeepRunning = false
                     self.statusNote = "Microphone permission denied. Enable it in Settings > Privacy & Security > Microphone."
                     return
                 }
                 do {
                     try self.startAudio()
                 } catch {
+                    self.shouldKeepRunning = false
                     self.stopAudio()
                     self.statusNote = error.localizedDescription
                 }
@@ -177,7 +205,10 @@ final class DarbukaEngine: ObservableObject {
         isRunning = true
         refreshSessionMetrics()
         refreshRouteInfo()
-        startMeterTimer()
+        if !isInBackground {
+            startMeterTimer()
+            setIdleTimerDisabled(true)
+        }
     }
 
     private func stopAudio() {
@@ -265,13 +296,101 @@ final class DarbukaEngine: ObservableObject {
             guard let self,
                   let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-            if type == .began && self.isRunning {
-                self.stopAudio()
+            if type == .began {
+                if self.isRunning {
+                    self.stopAudio()
+                }
+            } else if type == .ended && self.shouldKeepRunning && !self.isRunning {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    guard let self, self.shouldKeepRunning, !self.isRunning else { return }
+                    try? self.startAudio()
+                }
             }
+        }
+        mediaResetObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.stopAudio()
+            if self.shouldKeepRunning {
+                try? self.startAudio()
+            }
+        }
+        bgObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.isInBackground = true
+            self.saveLastStateNow()
+            self.meterTimer?.invalidate()
+            self.meterTimer = nil
+            self.setIdleTimerDisabled(false)
+        }
+        fgObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.isInBackground = false
+            if self.shouldKeepRunning && !self.isRunning {
+                try? self.startAudio()
+            } else if self.isRunning {
+                self.refreshSessionMetrics()
+                self.refreshRouteInfo()
+                if self.meterTimer == nil { self.startMeterTimer() }
+            }
+        }
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.isInBackground = false
+            self.setIdleTimerDisabled(true)
+            if self.shouldKeepRunning && !self.isRunning {
+                try? self.startAudio()
+            } else if self.isRunning && self.meterTimer == nil {
+                self.startMeterTimer()
+            }
+        }
+        termObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.saveLastStateNow()
+            DispatchQueue.main.async { UIApplication.shared.isIdleTimerDisabled = false }
+        }
+    }
+
+    private func setIdleTimerDisabled(_ disabled: Bool) {
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = disabled
+        }
+    }
+
+    private func scheduleSaveLastState() {
+        stateSaveTimer?.invalidate()
+        stateSaveTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+            self?.saveLastStateNow()
+        }
+    }
+
+    private func saveLastStateNow() {
+        stateSaveTimer?.invalidate()
+        stateSaveTimer = nil
+        let state = SavedEngineState(params: params, inputMode: inputMode)
+        if let data = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(data, forKey: lastStateKey)
+        }
+    }
+
+    private func loadLastState() {
+        if let data = UserDefaults.standard.data(forKey: lastStateKey),
+           let decoded = try? JSONDecoder().decode(SavedEngineState.self, from: data) {
+            params = decoded.params
+            inputMode = decoded.inputMode
         }
     }
 
     private func startMeterTimer() {
+        guard !isInBackground else { return }
         meterTimer?.invalidate()
         meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self, let fx = self.fx else { return }

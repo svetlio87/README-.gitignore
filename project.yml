@@ -18,6 +18,8 @@ targets:
         CFBundleDisplayName: S-Man Mix Fx
         CFBundleName: S-Man Mix Fx
         NSMicrophoneUsageDescription: Microphone access is required for S-Man Mix Fx live audio processing.
+        UIBackgroundModes:
+          - audio
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
