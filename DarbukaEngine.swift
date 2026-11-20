@@ -18,8 +18,22 @@ final class DarbukaEngine: ObservableObject {
     @Published var compGrDb: Float = 0
     @Published var limGrDb: Float = 0
     @Published var spectrumBins: [Float] = Array(repeating: 0, count: 24)
+    @Published var gateHistory: [Float] = Array(repeating: -60, count: 48)
+    @Published var gateOpenHistory: [Bool] = Array(repeating: true, count: 48)
+    @Published var limOutHistory: [Float] = Array(repeating: -60, count: 48)
+    @Published var limGrHistory: [Float] = Array(repeating: 0, count: 48)
+    @Published var mainScopeHistory: [Float] = Array(repeating: 0, count: 48)
     @Published var presets: [EnginePreset] = []
     @Published var activePresetId: UUID?
+
+    var isSpectrumActive: Bool = false {
+        didSet {
+            if isSpectrumActive != oldValue { pushParams() }
+        }
+    }
+    var activePageIndex: Int = 0 {
+        didSet { isSpectrumActive = (activePageIndex == 2) }
+    }
 
     private var unit: AudioUnit?
     private var fx: FXChain?
@@ -112,7 +126,7 @@ final class DarbukaEngine: ObservableObject {
         hwInChannels = inCh
 
         let chain = FXChain(sampleRate: sr)
-        chain.updateConfig(DSPConfig(from: params, inputMode: inputMode))
+        chain.updateConfig(DSPConfig(from: params, inputMode: inputMode, spectrumActive: isSpectrumActive))
         fx = chain
 
         var desc = AudioComponentDescription(
@@ -182,12 +196,17 @@ final class DarbukaEngine: ObservableObject {
         compGrDb = 0
         limGrDb = 0
         spectrumBins = Array(repeating: 0, count: 24)
+        gateHistory = Array(repeating: -60, count: 48)
+        gateOpenHistory = Array(repeating: true, count: 48)
+        limOutHistory = Array(repeating: -60, count: 48)
+        limGrHistory = Array(repeating: 0, count: 48)
+        mainScopeHistory = Array(repeating: 0, count: 48)
         gateOpen = true
         refreshRouteInfo()
     }
 
     private func pushParams() {
-        fx?.updateConfig(DSPConfig(from: params, inputMode: inputMode))
+        fx?.updateConfig(DSPConfig(from: params, inputMode: inputMode, spectrumActive: isSpectrumActive))
     }
 
     private func check(_ s: OSStatus) throws {
@@ -227,7 +246,16 @@ final class DarbukaEngine: ObservableObject {
         ) { [weak self] _ in
             guard let self else { return }
             self.refreshRouteInfo()
-            if self.isRunning { self.refreshSessionMetrics() }
+            if self.isRunning {
+                let s = AVAudioSession.sharedInstance()
+                let newSr = Float(s.sampleRate > 0 ? s.sampleRate : 48000)
+                let newCh = max(1, min(2, s.inputNumberOfChannels))
+                if abs(newSr - self.actualSampleRate) > 1 || newCh != self.hwInChannels {
+                    try? self.startAudio()
+                } else {
+                    self.refreshSessionMetrics()
+                }
+            }
         }
         interruptObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
@@ -245,12 +273,30 @@ final class DarbukaEngine: ObservableObject {
         meterTimer?.invalidate()
         meterTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self, let fx = self.fx else { return }
-            self.inputLevelDb = clampF(linToDb(fx.inputPeak), -60, 0)
-            self.outputLevelDb = clampF(linToDb(fx.outputPeak), -60, 0)
+            let inDb = clampF(linToDb(fx.inputPeak), -60, 0)
+            let outDb = clampF(linToDb(fx.outputPeak), -60, 0)
+            self.inputLevelDb = inDb
+            self.outputLevelDb = outDb
             self.gateOpen = fx.gateOpen
             self.compGrDb = fx.compGrDb
             self.limGrDb = fx.limGrDb
-            fx.copySpectrum(into: &self.spectrumBins)
+
+            if self.activePageIndex == 0 {
+                self.mainScopeHistory.removeFirst()
+                self.mainScopeHistory.append(clampF((outDb + 60.0) / 60.0, 0, 1))
+            } else if self.activePageIndex == 1 {
+                self.gateHistory.removeFirst()
+                self.gateHistory.append(inDb)
+                self.gateOpenHistory.removeFirst()
+                self.gateOpenHistory.append(fx.gateOpen)
+            } else if self.activePageIndex == 2 {
+                fx.copySpectrum(into: &self.spectrumBins)
+            } else if self.activePageIndex == 8 {
+                self.limOutHistory.removeFirst()
+                self.limOutHistory.append(outDb)
+                self.limGrHistory.removeFirst()
+                self.limGrHistory.append(fx.limGrDb)
+            }
         }
     }
 

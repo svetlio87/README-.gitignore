@@ -1,11 +1,31 @@
 import Foundation
 import os
 
-// MARK: - Parameter & Preset Types
+// MARK: - Math & Smooth Parameter Helpers
 
 @inline(__always) func dbToLin(_ db: Float) -> Float { powf(10, db / 20) }
 @inline(__always) func linToDb(_ lin: Float) -> Float { 20 * log10f(max(lin, 1e-4)) }
 @inline(__always) func clampF(_ v: Float, _ lo: Float, _ hi: Float) -> Float { min(hi, max(lo, v)) }
+@inline(__always) func flushDenormal(_ x: Float) -> Float { abs(x) < 1e-20 ? 0 : x }
+
+struct SmoothFloat {
+    private(set) var current: Float
+    var target: Float
+    private let alpha: Float
+
+    init(_ value: Float = 0, alpha: Float = 0.0025) {
+        self.current = value
+        self.target = value
+        self.alpha = alpha
+    }
+
+    @inline(__always) mutating func next() -> Float {
+        current += (target - current) * alpha
+        return current
+    }
+}
+
+// MARK: - Parameter & Preset Types
 
 enum InputChannelMode: String, CaseIterable, Codable {
     case in1 = "In 1"
@@ -73,6 +93,7 @@ struct EnsembleVoiceParams: Codable, Equatable {
 struct EnsembleParams: Codable, Equatable {
     var enabled: Bool = false
     var mix: Float = 0.35
+    var levelDb: Float = 0
     var detuneCents: Float = 10.0
     var stereoWidth: Float = 0.8
     var presetName: String = "Solo + Wide"
@@ -124,10 +145,12 @@ struct EngineParams: Codable, Equatable {
     var gateAttackMs: Float = 0.5
     var gateHoldMs: Float = 30
     var gateReleaseMs: Float = 100
+    var gateLevelDb: Float = 0
 
-    // Pro-Q 6
+    // S-Man EQ
     var eqOn: Bool = true
     var hpfHz: Float = 70
+    var eqLevelDb: Float = 0
     var eqBands: [EQBandParams] = [
         EQBandParams(isEnabled: true, type: .lowShelf, freq: 90, gainDb: 0, q: 0.707),
         EQBandParams(isEnabled: true, type: .bell, freq: 250, gainDb: 0, q: 1.0),
@@ -144,6 +167,7 @@ struct EngineParams: Codable, Equatable {
     var compAttackMs: Float = 15
     var compReleaseMs: Float = 100
     var compMakeupDb: Float = 0
+    var compLevelDb: Float = 0
 
     // Saturation
     var satOn: Bool = false
@@ -160,8 +184,10 @@ struct EngineParams: Codable, Equatable {
     var tapeBumpDb: Float = 1.5
     var tapeToneHz: Float = 12000
     var tapeFlutter: Float = 0.15
+    var tapeMix: Float = 1.0
+    var tapeLevelDb: Float = 0
 
-    // Delay
+    // Delay + Wet EQ + Volume
     var delayOn: Bool = false
     var delayMode: DelayMode = .stereo
     var delaySync: Bool = false
@@ -171,8 +197,12 @@ struct EngineParams: Codable, Equatable {
     var delayFeedback: Float = 0.3
     var delayLowCutHz: Float = 150
     var delayHighCutHz: Float = 6500
+    var delayEqLowDb: Float = 0
+    var delayEqMidDb: Float = 0
+    var delayEqHighDb: Float = 0
     var delayModWidth: Float = 0.35
     var delayMix: Float = 0.2
+    var delayLevelDb: Float = 0
 
     var effectiveDelayMs: Float {
         if delaySync {
@@ -182,7 +212,7 @@ struct EngineParams: Codable, Equatable {
         return clampF(delayTimeMs, 20, 1500)
     }
 
-    // Reverb
+    // Reverb + Wet EQ + Volume
     var revOn: Bool = true
     var revMode: ReverbMode = .hall
     var revSize: Float = 0.55
@@ -190,11 +220,16 @@ struct EngineParams: Codable, Equatable {
     var revPreDelayMs: Float = 12
     var revDampingHz: Float = 7000
     var revLowCutHz: Float = 180
+    var revEqLowDb: Float = 0
+    var revEqMidDb: Float = 0
+    var revEqHighDb: Float = 0
     var revWidth: Float = 0.8
     var revMix: Float = 0.18
+    var revLevelDb: Float = 0
 
     // Limiter
     var limiterCeilingDb: Float = -1
+    var limiterLevelDb: Float = 0
 
     // Ensemble
     var ensemble: EnsembleParams = EnsembleParams()
@@ -206,7 +241,7 @@ struct EnginePreset: Identifiable, Codable {
     var params: EngineParams
 }
 
-// MARK: - BiquadFilter (Audio + Pro-Q 6 Curve Display)
+// MARK: - BiquadFilter (Audio + Curve Display)
 
 struct BiquadFilter {
     private var b0: Float = 1, b1: Float = 0, b2: Float = 0, a1: Float = 0, a2: Float = 0
@@ -218,8 +253,8 @@ struct BiquadFilter {
 
     @inline(__always) mutating func process(_ x: Float) -> Float {
         let y = b0 * x + z1
-        z1 = b1 * x - a1 * y + z2
-        z2 = b2 * x - a2 * y
+        z1 = flushDenormal(b1 * x - a1 * y + z2)
+        z2 = flushDenormal(b2 * x - a2 * y)
         return y
     }
 
@@ -288,10 +323,11 @@ struct BiquadFilter {
     }
 }
 
-// MARK: - Lock-Free Audio Config Snapshot (Value Types Only, Zero ARC on Audio Thread)
+// MARK: - Lock-Free Audio Config Snapshot (Value Types Only)
 
 struct DSPConfig {
     var inputMode: InputChannelMode = .in1
+    var spectrumActive: Bool = false
     var gainDb: Float = 0
     var masterDb: Float = 0
     var muted: Bool = false
@@ -302,9 +338,11 @@ struct DSPConfig {
     var gateAttackMs: Float = 0.5
     var gateHoldMs: Float = 30
     var gateReleaseMs: Float = 100
+    var gateLevelDb: Float = 0
 
     var eqOn: Bool = true
     var hpfHz: Float = 70
+    var eqLevelDb: Float = 0
     var band0 = EQBandParams(isEnabled: true, type: .lowShelf, freq: 90, gainDb: 0, q: 0.707)
     var band1 = EQBandParams(isEnabled: true, type: .bell, freq: 250, gainDb: 0, q: 1.0)
     var band2 = EQBandParams(isEnabled: true, type: .bell, freq: 800, gainDb: 0, q: 1.0)
@@ -318,6 +356,7 @@ struct DSPConfig {
     var compAttackMs: Float = 15
     var compReleaseMs: Float = 100
     var compMakeupDb: Float = 0
+    var compLevelDb: Float = 0
 
     var satOn: Bool = false
     var cabSimOn: Bool = false
@@ -332,6 +371,8 @@ struct DSPConfig {
     var tapeBumpDb: Float = 1.5
     var tapeToneHz: Float = 12000
     var tapeFlutter: Float = 0.15
+    var tapeMix: Float = 1.0
+    var tapeLevelDb: Float = 0
 
     var delayOn: Bool = false
     var delayMode: DelayMode = .stereo
@@ -339,8 +380,12 @@ struct DSPConfig {
     var delayFeedback: Float = 0.3
     var delayLowCutHz: Float = 150
     var delayHighCutHz: Float = 6500
+    var delayEqLowDb: Float = 0
+    var delayEqMidDb: Float = 0
+    var delayEqHighDb: Float = 0
     var delayModWidth: Float = 0.35
     var delayMix: Float = 0.2
+    var delayLevelDb: Float = 0
 
     var revOn: Bool = true
     var revMode: ReverbMode = .hall
@@ -349,13 +394,19 @@ struct DSPConfig {
     var revPreDelayMs: Float = 12
     var revDampingHz: Float = 7000
     var revLowCutHz: Float = 180
+    var revEqLowDb: Float = 0
+    var revEqMidDb: Float = 0
+    var revEqHighDb: Float = 0
     var revWidth: Float = 0.8
     var revMix: Float = 0.18
+    var revLevelDb: Float = 0
 
     var limiterCeilingDb: Float = -1
+    var limiterLevelDb: Float = 0
 
     var ensembleEnabled: Bool = false
     var ensembleMix: Float = 0.35
+    var ensembleLevelDb: Float = 0
     var ensembleDetuneCents: Float = 10
     var ensembleStereoWidth: Float = 0.8
     var voice0 = EnsembleVoiceParams(isActive: true, octave: 0, volume: 0.9, pan: -0.55, hpfHz: 160, bowEqDb: 1.0)
@@ -367,8 +418,9 @@ struct DSPConfig {
 
     init() {}
 
-    init(from p: EngineParams, inputMode: InputChannelMode) {
+    init(from p: EngineParams, inputMode: InputChannelMode, spectrumActive: Bool) {
         self.inputMode = inputMode
+        self.spectrumActive = spectrumActive
         self.gainDb = p.gainDb
         self.masterDb = p.masterDb
         self.muted = p.muted
@@ -379,9 +431,11 @@ struct DSPConfig {
         self.gateAttackMs = p.gateAttackMs
         self.gateHoldMs = p.gateHoldMs
         self.gateReleaseMs = p.gateReleaseMs
+        self.gateLevelDb = p.gateLevelDb
 
         self.eqOn = p.eqOn
         self.hpfHz = p.hpfHz
+        self.eqLevelDb = p.eqLevelDb
         if p.eqBands.count > 0 { band0 = p.eqBands[0] }
         if p.eqBands.count > 1 { band1 = p.eqBands[1] }
         if p.eqBands.count > 2 { band2 = p.eqBands[2] }
@@ -395,6 +449,7 @@ struct DSPConfig {
         self.compAttackMs = p.compAttackMs
         self.compReleaseMs = p.compReleaseMs
         self.compMakeupDb = p.compMakeupDb
+        self.compLevelDb = p.compLevelDb
 
         self.satOn = p.satOn
         self.cabSimOn = p.cabSimOn
@@ -409,6 +464,8 @@ struct DSPConfig {
         self.tapeBumpDb = p.tapeBumpDb
         self.tapeToneHz = p.tapeToneHz
         self.tapeFlutter = p.tapeFlutter
+        self.tapeMix = p.tapeMix
+        self.tapeLevelDb = p.tapeLevelDb
 
         self.delayOn = p.delayOn
         self.delayMode = p.delayMode
@@ -416,8 +473,12 @@ struct DSPConfig {
         self.delayFeedback = p.delayFeedback
         self.delayLowCutHz = p.delayLowCutHz
         self.delayHighCutHz = p.delayHighCutHz
+        self.delayEqLowDb = p.delayEqLowDb
+        self.delayEqMidDb = p.delayEqMidDb
+        self.delayEqHighDb = p.delayEqHighDb
         self.delayModWidth = p.delayModWidth
         self.delayMix = p.delayMix
+        self.delayLevelDb = p.delayLevelDb
 
         self.revOn = p.revOn
         self.revMode = p.revMode
@@ -426,13 +487,19 @@ struct DSPConfig {
         self.revPreDelayMs = p.revPreDelayMs
         self.revDampingHz = p.revDampingHz
         self.revLowCutHz = p.revLowCutHz
+        self.revEqLowDb = p.revEqLowDb
+        self.revEqMidDb = p.revEqMidDb
+        self.revEqHighDb = p.revEqHighDb
         self.revWidth = p.revWidth
         self.revMix = p.revMix
+        self.revLevelDb = p.revLevelDb
 
         self.limiterCeilingDb = p.limiterCeilingDb
+        self.limiterLevelDb = p.limiterLevelDb
 
         self.ensembleEnabled = p.ensemble.enabled
         self.ensembleMix = p.ensemble.mix
+        self.ensembleLevelDb = p.ensemble.levelDb
         self.ensembleDetuneCents = p.ensemble.detuneCents
         self.ensembleStereoWidth = p.ensemble.stereoWidth
         let v = p.ensemble.voices
@@ -454,6 +521,7 @@ private final class StereoGate {
     private var atk: Float = 0, rel: Float = 0
     private var holdSamples = 0, holdLeft = 0
     private var env: Float = 0, gain: Float = 1
+    private var levelSmooth = SmoothFloat(1)
     private(set) var isOpen = false
 
     init(sr: Float) {
@@ -467,12 +535,14 @@ private final class StereoGate {
         atk = expf(-1 / (max(cfg.gateAttackMs, 0.05) * 0.001 * sr))
         rel = expf(-1 / (max(cfg.gateReleaseMs, 1) * 0.001 * sr))
         holdSamples = Int(cfg.gateHoldMs * 0.001 * sr)
+        levelSmooth.target = cfg.gateOn ? dbToLin(cfg.gateLevelDb) : 1
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float, enabled: Bool) {
+        let lvl = levelSmooth.next()
         guard enabled else { isOpen = true; gain = 1; return }
         let a = max(abs(l), abs(r))
-        env = a > env ? a : env * detDecay
+        env = flushDenormal(a > env ? a : env * detDecay)
         if isOpen {
             if env > closeLin { holdLeft = holdSamples }
             else if holdLeft > 0 { holdLeft -= 1 }
@@ -483,12 +553,13 @@ private final class StereoGate {
         }
         let target: Float = isOpen ? 1 : 0
         let c = target > gain ? atk : rel
-        gain = target + c * (gain - target)
-        l *= gain; r *= gain
+        gain = flushDenormal(target + c * (gain - target))
+        let total = gain * lvl
+        l *= total; r *= total
     }
 }
 
-// MARK: - 6-Band Stereo Pro-Q 6
+// MARK: - 6-Band Stereo S-Man EQ
 
 private final class StereoEQ {
     private let sr: Float
@@ -499,11 +570,13 @@ private final class StereoEQ {
                 r3 = BiquadFilter(), r4 = BiquadFilter(), r5 = BiquadFilter()
     private var b0On = true, b1On = true, b2On = true, b3On = true, b4On = true, b5On = true
     private var eqOn = true
+    private var levelSmooth = SmoothFloat(1)
 
     init(sr: Float) { self.sr = sr }
 
     func update(_ cfg: DSPConfig) {
         eqOn = cfg.eqOn
+        levelSmooth.target = cfg.eqOn ? dbToLin(cfg.eqLevelDb) : 1
         hpfL.configure(type: .highPass, sampleRate: sr, freq: cfg.hpfHz, gainDb: 0, q: 0.707)
         hpfR.configure(type: .highPass, sampleRate: sr, freq: cfg.hpfHz, gainDb: 0, q: 0.707)
         b0On = cfg.band0.isEnabled; b1On = cfg.band1.isEnabled; b2On = cfg.band2.isEnabled
@@ -524,6 +597,7 @@ private final class StereoEQ {
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float) {
+        let lvl = levelSmooth.next()
         l = hpfL.process(l)
         r = hpfR.process(r)
         guard eqOn else { return }
@@ -533,6 +607,7 @@ private final class StereoEQ {
         if b3On { l = l3.process(l); r = r3.process(r) }
         if b4On { l = l4.process(l); r = r4.process(r) }
         if b5On { l = l5.process(l); r = r5.process(r) }
+        l *= lvl; r *= lvl
     }
 }
 
@@ -542,6 +617,7 @@ private final class StereoCompressor {
     private let sr: Float
     private var atk: Float = 0, rel: Float = 0
     private var thr: Float = -18, slope: Float = 0.5, makeup: Float = 0
+    private var levelSmooth = SmoothFloat(1)
     private var env: Float = 0
     private(set) var lastGrDb: Float = 0
 
@@ -553,17 +629,19 @@ private final class StereoCompressor {
         thr = cfg.compThreshDb
         slope = 1 - 1 / max(cfg.compRatio, 1)
         makeup = cfg.compMakeupDb
+        levelSmooth.target = cfg.compOn ? dbToLin(cfg.compLevelDb) : 1
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float, enabled: Bool) {
+        let lvl = levelSmooth.next()
         guard enabled else { lastGrDb = 0; return }
         let a = max(abs(l), abs(r))
         let c = a > env ? atk : rel
-        env = a + c * (env - a)
+        env = flushDenormal(a + c * (env - a))
         let over = 20 * log10f(max(env, 1e-6)) - thr
         let gr = over > 0 ? over * slope : 0
         lastGrDb = max(gr, lastGrDb * 0.999)
-        let g = dbToLin(makeup - gr)
+        let g = dbToLin(makeup - gr) * lvl
         l *= g; r *= g
     }
 }
@@ -581,8 +659,8 @@ private final class StereoSaturation {
     private var cabOn = false
     private var driveLin: Float = 1
     private var warmth: Float = 0.4
-    private var mix: Float = 0.5
-    private var levelLin: Float = 1
+    private var mixSmooth = SmoothFloat(0.5)
+    private var levelSmooth = SmoothFloat(1)
 
     init(sr: Float) {
         self.sr = sr
@@ -599,8 +677,8 @@ private final class StereoSaturation {
         cabOn = cfg.cabSimOn
         driveLin = dbToLin(cfg.satDriveDb)
         warmth = cfg.satWarmth
-        mix = cfg.satMix
-        levelLin = dbToLin(cfg.satLevelDb)
+        mixSmooth.target = cfg.satMix
+        levelSmooth.target = cfg.satOn ? dbToLin(cfg.satLevelDb) : 1
         toneL.configure(type: .lowPass, sampleRate: sr, freq: cfg.satToneHz, gainDb: 0, q: 0.707)
         toneR.configure(type: .lowPass, sampleRate: sr, freq: cfg.satToneHz, gainDb: 0, q: 0.707)
     }
@@ -613,6 +691,8 @@ private final class StereoSaturation {
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float) {
+        let mix = mixSmooth.next()
+        let lvl = levelSmooth.next()
         guard enabled else { return }
         let dryL = l, dryR = r
         var wL = toneL.process(shape(l))
@@ -621,8 +701,8 @@ private final class StereoSaturation {
             wL = cabLpL.process(cabBodyL.process(cabHpL.process(wL)))
             wR = cabLpR.process(cabBodyR.process(cabHpR.process(wR)))
         }
-        l = (dryL * (1 - mix) + wL * mix) * levelLin
-        r = (dryR * (1 - mix) + wR * mix) * levelLin
+        l = (dryL * (1 - mix) + wL * mix) * lvl
+        r = (dryR * (1 - mix) + wR * mix) * lvl
     }
 }
 
@@ -641,6 +721,8 @@ private final class StereoTape {
     private var enabled = false
     private var driveLin: Float = 1
     private var flutter: Float = 0.15
+    private var mixSmooth = SmoothFloat(1)
+    private var levelSmooth = SmoothFloat(1)
 
     init(sr: Float) {
         self.sr = sr
@@ -654,6 +736,8 @@ private final class StereoTape {
         enabled = cfg.tapeOn
         driveLin = dbToLin(cfg.tapeDriveDb)
         flutter = cfg.tapeFlutter
+        mixSmooth.target = cfg.tapeMix
+        levelSmooth.target = cfg.tapeOn ? dbToLin(cfg.tapeLevelDb) : 1
         bumpL.configure(type: .lowShelf, sampleRate: sr, freq: 95, gainDb: cfg.tapeBumpDb, q: 0.707)
         bumpR.configure(type: .lowShelf, sampleRate: sr, freq: 95, gainDb: cfg.tapeBumpDb, q: 0.707)
         toneL.configure(type: .lowPass, sampleRate: sr, freq: cfg.tapeToneHz, gainDb: 0, q: 0.707)
@@ -670,7 +754,10 @@ private final class StereoTape {
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float) {
+        let mix = mixSmooth.next()
+        let lvl = levelSmooth.next()
         guard enabled else { return }
+        let dryL = l, dryR = r
         var xL = tanhf(bumpL.process(l) * driveLin) / max(1, sqrtf(driveLin) * 0.85)
         var xR = tanhf(bumpR.process(r) * driveLin) / max(1, sqrtf(driveLin) * 0.85)
         xL = toneL.process(xL)
@@ -682,17 +769,21 @@ private final class StereoTape {
         lfoPhase += 2 * Float.pi * 3.8 / sr
         if lfoPhase > 2 * Float.pi { lfoPhase -= 2 * Float.pi }
         let modSamples = (1.5 + sinf(lfoPhase)) * flutter * (0.0015 * sr)
+        let wetL: Float, wetR: Float
         if flutter > 0.005 {
-            l = readInterp(bufL, delay: 4 + modSamples)
-            r = readInterp(bufR, delay: 4 + modSamples * 0.92)
+            wetL = readInterp(bufL, delay: 4 + modSamples)
+            wetR = readInterp(bufR, delay: 4 + modSamples * 0.92)
         } else {
-            l = xL; r = xR
+            wetL = xL; wetR = xR
         }
         idx += 1; if idx == bufSize { idx = 0 }
+
+        l = (dryL * (1 - mix) + wetL * mix) * lvl
+        r = (dryR * (1 - mix) + wetR * mix) * lvl
     }
 }
 
-// MARK: - Stereo Delay (Stereo / Ping-Pong / Tape / Analog)
+// MARK: - Stereo Delay + Dedicated 3-Band Wet EQ + Smooth Volume
 
 private final class StereoDelay {
     private let sr: Float
@@ -704,13 +795,17 @@ private final class StereoDelay {
 
     private var hpL = BiquadFilter(), hpR = BiquadFilter()
     private var lpL = BiquadFilter(), lpR = BiquadFilter()
+    private var eqLowL = BiquadFilter(), eqLowR = BiquadFilter()
+    private var eqMidL = BiquadFilter(), eqMidR = BiquadFilter()
+    private var eqHighL = BiquadFilter(), eqHighR = BiquadFilter()
 
     private var enabled = false
     private var mode: DelayMode = .stereo
     private var delaySamples: Float = 13440
     private var feedback: Float = 0.3
     private var modWidth: Float = 0.35
-    private var mix: Float = 0.2
+    private var mixSmooth = SmoothFloat(0.2)
+    private var levelSmooth = SmoothFloat(1)
 
     init(sr: Float) {
         self.sr = sr
@@ -727,11 +822,20 @@ private final class StereoDelay {
         delaySamples = clampF(cfg.effectiveDelayMs * 0.001 * sr, 10, Float(maxSamples - 8))
         feedback = clampF(cfg.delayFeedback, 0, 0.92)
         modWidth = cfg.delayModWidth
-        mix = cfg.delayMix
+        mixSmooth.target = cfg.delayMix
+        levelSmooth.target = cfg.delayOn ? dbToLin(cfg.delayLevelDb) : 1
+
         hpL.configure(type: .highPass, sampleRate: sr, freq: cfg.delayLowCutHz, gainDb: 0, q: 0.707)
         hpR.configure(type: .highPass, sampleRate: sr, freq: cfg.delayLowCutHz, gainDb: 0, q: 0.707)
         lpL.configure(type: .lowPass, sampleRate: sr, freq: cfg.delayHighCutHz, gainDb: 0, q: 0.707)
         lpR.configure(type: .lowPass, sampleRate: sr, freq: cfg.delayHighCutHz, gainDb: 0, q: 0.707)
+
+        eqLowL.configure(type: .lowShelf, sampleRate: sr, freq: 160, gainDb: cfg.delayEqLowDb, q: 0.707)
+        eqLowR.configure(type: .lowShelf, sampleRate: sr, freq: 160, gainDb: cfg.delayEqLowDb, q: 0.707)
+        eqMidL.configure(type: .bell, sampleRate: sr, freq: 1000, gainDb: cfg.delayEqMidDb, q: 0.9)
+        eqMidR.configure(type: .bell, sampleRate: sr, freq: 1000, gainDb: cfg.delayEqMidDb, q: 0.9)
+        eqHighL.configure(type: .highShelf, sampleRate: sr, freq: 5500, gainDb: cfg.delayEqHighDb, q: 0.707)
+        eqHighR.configure(type: .highShelf, sampleRate: sr, freq: 5500, gainDb: cfg.delayEqHighDb, q: 0.707)
     }
 
     @inline(__always) private func readTap(_ buf: UnsafeMutablePointer<Float>, delay: Float) -> Float {
@@ -744,6 +848,7 @@ private final class StereoDelay {
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float) {
+        let wetGain = mixSmooth.next() * levelSmooth.next()
         guard enabled else { return }
 
         lfoPhase += 2 * Float.pi * 0.65 / sr
@@ -762,23 +867,25 @@ private final class StereoDelay {
 
         if mode == .pingPong {
             let monoIn = (l + r) * 0.5
-            bufL[writeIdx] = monoIn + fbR * feedback
-            bufR[writeIdx] = fbL * feedback
+            bufL[writeIdx] = flushDenormal(monoIn + fbR * feedback)
+            bufR[writeIdx] = flushDenormal(fbL * feedback)
         } else {
-            bufL[writeIdx] = l + fbL * feedback
-            bufR[writeIdx] = r + fbR * feedback
+            bufL[writeIdx] = flushDenormal(l + fbL * feedback)
+            bufR[writeIdx] = flushDenormal(r + fbR * feedback)
         }
 
         writeIdx += 1; if writeIdx == maxSamples { writeIdx = 0 }
 
-        let mid = (tapL + tapR) * 0.5
-        let side = (tapL - tapR) * 0.5 * (0.3 + modWidth * 0.7)
-        l += (mid + side) * mix
-        r += (mid - side) * mix
+        let wetL = eqHighL.process(eqMidL.process(eqLowL.process(fbL)))
+        let wetR = eqHighR.process(eqMidR.process(eqLowR.process(fbR)))
+        let mid = (wetL + wetR) * 0.5
+        let side = (wetL - wetR) * 0.5 * (0.3 + modWidth * 0.7)
+        l += (mid + side) * wetGain
+        r += (mid - side) * wetGain
     }
 }
 
-// MARK: - Stereo Reverb (Hall / Room / Plate / Chamber)
+// MARK: - Stereo Reverb + Dedicated 3-Band Wet EQ + Smooth Volume
 
 private struct CombUnit {
     let buf: UnsafeMutablePointer<Float>
@@ -798,8 +905,8 @@ private struct CombUnit {
 
     @inline(__always) mutating func process(_ x: Float) -> Float {
         let y = buf[idx]
-        lp = y * (1 - damp) + lp * damp
-        buf[idx] = x + lp * fb
+        lp = flushDenormal(y * (1 - damp) + lp * damp)
+        buf[idx] = flushDenormal(x + lp * fb)
         idx += 1; if idx >= activeSize { idx = 0 }
         return y
     }
@@ -818,7 +925,7 @@ private struct AllpassUnit {
 
     @inline(__always) mutating func process(_ x: Float) -> Float {
         let b = buf[idx]
-        buf[idx] = x + b * 0.5
+        buf[idx] = flushDenormal(x + b * 0.5)
         idx += 1; if idx == size { idx = 0 }
         return b - x
     }
@@ -837,9 +944,14 @@ private final class StereoReverb {
     private let baseCombs = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
 
     private var hpL = BiquadFilter(), hpR = BiquadFilter()
+    private var eqLowL = BiquadFilter(), eqLowR = BiquadFilter()
+    private var eqMidL = BiquadFilter(), eqMidR = BiquadFilter()
+    private var eqHighL = BiquadFilter(), eqHighR = BiquadFilter()
+
     private var enabled = true
     private var width: Float = 0.8
-    private var mix: Float = 0.18
+    private var mixSmooth = SmoothFloat(0.18)
+    private var levelSmooth = SmoothFloat(1)
 
     init(sr: Float) {
         self.sr = sr
@@ -873,10 +985,19 @@ private final class StereoReverb {
     func update(_ cfg: DSPConfig) {
         enabled = cfg.revOn
         width = cfg.revWidth
-        mix = cfg.revMix
+        mixSmooth.target = cfg.revMix
+        levelSmooth.target = cfg.revOn ? dbToLin(cfg.revLevelDb) : 1
         preDelaySamples = min(Int(cfg.revPreDelayMs * 0.001 * sr), preMaxSize - 2)
+
         hpL.configure(type: .highPass, sampleRate: sr, freq: cfg.revLowCutHz, gainDb: 0, q: 0.707)
         hpR.configure(type: .highPass, sampleRate: sr, freq: cfg.revLowCutHz, gainDb: 0, q: 0.707)
+
+        eqLowL.configure(type: .lowShelf, sampleRate: sr, freq: 180, gainDb: cfg.revEqLowDb, q: 0.707)
+        eqLowR.configure(type: .lowShelf, sampleRate: sr, freq: 180, gainDb: cfg.revEqLowDb, q: 0.707)
+        eqMidL.configure(type: .bell, sampleRate: sr, freq: 1200, gainDb: cfg.revEqMidDb, q: 0.9)
+        eqMidR.configure(type: .bell, sampleRate: sr, freq: 1200, gainDb: cfg.revEqMidDb, q: 0.9)
+        eqHighL.configure(type: .highShelf, sampleRate: sr, freq: 6000, gainDb: cfg.revEqHighDb, q: 0.707)
+        eqHighR.configure(type: .highShelf, sampleRate: sr, freq: 6000, gainDb: cfg.revEqHighDb, q: 0.707)
 
         let modeScale: Float
         let modeDampMul: Float
@@ -906,7 +1027,9 @@ private final class StereoReverb {
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float) {
+        let wetGain = mixSmooth.next() * levelSmooth.next()
         guard enabled else { return }
+
         preL[preIdx] = hpL.process(l)
         preR[preIdx] = hpR.process(r)
         var rIdx = preIdx - preDelaySamples
@@ -926,10 +1049,13 @@ private final class StereoReverb {
             wR = apsR[i].process(wR)
         }
 
+        wL = eqHighL.process(eqMidL.process(eqLowL.process(wL)))
+        wR = eqHighR.process(eqMidR.process(eqLowR.process(wR)))
+
         let mid = (wL + wR) * 0.5
         let side = (wL - wR) * 0.5 * width
-        l += (mid + side) * mix
-        r += (mid - side) * mix
+        l += (mid + side) * wetGain
+        r += (mid - side) * wetGain
     }
 }
 
@@ -960,7 +1086,7 @@ private final class EnsembleVoiceDSP {
 
     func update(_ v: EnsembleVoiceParams, detuneCents: Float, stereoWidth: Float, voiceIndex: Int) {
         active = v.isActive
-        let voiceOffset = (Float(voiceIndex) - 2.5) * 0.4 // spread detune across voices
+        let voiceOffset = (Float(voiceIndex) - 2.5) * 0.4
         let totalCents = Float(v.octave) * 100.0 + voiceOffset * detuneCents
         pitchRatio = powf(2.0, totalCents / 1200.0)
 
@@ -1019,7 +1145,8 @@ private final class EnsembleVoiceDSP {
 private final class StereoEnsemble {
     private let voices: [EnsembleVoiceDSP]
     private var enabled = false
-    private var mix: Float = 0.35
+    private var mixSmooth = SmoothFloat(0.35)
+    private var levelSmooth = SmoothFloat(1)
 
     init(sr: Float) {
         voices = (0..<6).map { EnsembleVoiceDSP(sr: sr, seedOffset: Float($0) * 1.05) }
@@ -1027,7 +1154,8 @@ private final class StereoEnsemble {
 
     func update(_ cfg: DSPConfig) {
         enabled = cfg.ensembleEnabled
-        mix = cfg.ensembleMix
+        mixSmooth.target = cfg.ensembleMix
+        levelSmooth.target = cfg.ensembleEnabled ? dbToLin(cfg.ensembleLevelDb) : 1
         voices[0].update(cfg.voice0, detuneCents: cfg.ensembleDetuneCents, stereoWidth: cfg.ensembleStereoWidth, voiceIndex: 0)
         voices[1].update(cfg.voice1, detuneCents: cfg.ensembleDetuneCents, stereoWidth: cfg.ensembleStereoWidth, voiceIndex: 1)
         voices[2].update(cfg.voice2, detuneCents: cfg.ensembleDetuneCents, stereoWidth: cfg.ensembleStereoWidth, voiceIndex: 2)
@@ -1037,13 +1165,15 @@ private final class StereoEnsemble {
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float) {
+        let mix = mixSmooth.next()
+        let lvl = levelSmooth.next()
         guard enabled else { return }
         let mono = (l + r) * 0.5
         var wL: Float = 0, wR: Float = 0
         for v in voices { v.process(mono, outL: &wL, outR: &wR) }
         let dry = 1 - mix * 0.45
-        l = l * dry + wL * mix
-        r = r * dry + wR * mix
+        l = l * dry + wL * mix * lvl
+        r = r * dry + wR * mix * lvl
     }
 }
 
@@ -1056,6 +1186,7 @@ private final class StereoLimiter {
     private var idx = 0
     private let rel: Float
     private var ceil: Float = 0.89
+    private var levelSmooth = SmoothFloat(1)
     private var g: Float = 1
     private(set) var lastGrDb: Float = 0
 
@@ -1070,16 +1201,19 @@ private final class StereoLimiter {
 
     func update(_ cfg: DSPConfig) {
         ceil = dbToLin(cfg.limiterCeilingDb)
+        levelSmooth.target = dbToLin(cfg.limiterLevelDb)
     }
 
     @inline(__always) func process(_ l: inout Float, _ r: inout Float) {
+        let lvl = levelSmooth.next()
         let dL = lookBufL[idx], dR = lookBufR[idx]
-        lookBufL[idx] = l; lookBufR[idx] = r
+        lookBufL[idx] = l * lvl
+        lookBufR[idx] = r * lvl
         idx += 1; if idx == delayLen { idx = 0 }
 
-        let a = max(max(abs(l), abs(r)), max(abs(dL), abs(dR)))
+        let a = max(max(abs(l * lvl), abs(r * lvl)), max(abs(dL), abs(dR)))
         let t: Float = a > ceil ? ceil / a : 1
-        g = t < g ? g * 0.75 + t * 0.25 : t + rel * (g - t)
+        g = flushDenormal(t < g ? g * 0.75 + t * 0.25 : t + rel * (g - t))
         let gr = max(0, -20 * log10f(max(g, 1e-6)))
         lastGrDb = max(gr, lastGrDb * 0.999)
 
@@ -1088,7 +1222,7 @@ private final class StereoLimiter {
     }
 }
 
-// MARK: - 24-Band Logarithmic Spectrum Analyzer (Zero Audio-Thread Allocation)
+// MARK: - 24-Band Logarithmic Spectrum Analyzer (Runs Only When EQ View Is Open)
 
 private struct BandpassState {
     var b0: Float = 0, b2: Float = 0, a1: Float = 0, a2: Float = 0
@@ -1131,10 +1265,10 @@ private final class SpectrumAnalyzer {
         for i in 0..<SpectrumAnalyzer.bandCount {
             var b = bands[i]
             let y = b.b0 * x + b.z1
-            b.z1 = -b.a1 * y + b.z2
-            b.z2 = b.b2 * x - b.a2 * y
+            b.z1 = flushDenormal(-b.a1 * y + b.z2)
+            b.z2 = flushDenormal(b.b2 * x - b.a2 * y)
             let a = abs(y)
-            b.env = a > b.env ? a : b.env * decay
+            b.env = flushDenormal(a > b.env ? a : b.env * decay)
             bands[i] = b
         }
     }
@@ -1169,10 +1303,9 @@ final class FXChain {
     private let limiter: StereoLimiter
     private let analyzer: SpectrumAnalyzer
 
-    private var inGainTarget: Float = 1, inGainSmooth: Float = 1
-    private var masterTarget: Float = 1, masterSmooth: Float = 1
+    private var inGainSmooth = SmoothFloat(1)
+    private var masterSmooth = SmoothFloat(1)
 
-    // Read by main thread timer for UI meters
     private(set) var inputPeak: Float = 0
     private(set) var outputPeak: Float = 0
     private(set) var gateOpen: Bool = true
@@ -1214,8 +1347,8 @@ final class FXChain {
 
     private func applyConfig(_ cfg: DSPConfig) {
         inputMode = cfg.inputMode
-        inGainTarget = dbToLin(cfg.gainDb)
-        masterTarget = cfg.muted || cfg.masterDb <= -59.5 ? 0 : dbToLin(cfg.masterDb)
+        inGainSmooth.target = dbToLin(cfg.gainDb)
+        masterSmooth.target = cfg.muted || cfg.masterDb <= -59.5 ? 0 : dbToLin(cfg.masterDb)
         gate.update(cfg)
         eq.update(cfg)
         comp.update(cfg)
@@ -1241,13 +1374,14 @@ final class FXChain {
 
         var inPk: Float = 0
         var outPk: Float = 0
+        let runSpectrum = activeConfig.spectrumActive
 
         for i in 0..<n {
-            inGainSmooth += (inGainTarget - inGainSmooth) * 0.005
-            masterSmooth += (masterTarget - masterSmooth) * 0.005
+            let inG = inGainSmooth.next()
+            let mG = masterSmooth.next()
 
-            var l = left[i] * inGainSmooth
-            var r = right[i] * inGainSmooth
+            var l = left[i] * inG
+            var r = right[i] * inG
             inPk = max(inPk, max(abs(l), abs(r)))
 
             gate.process(&l, &r, enabled: activeConfig.gateOn)
@@ -1259,11 +1393,13 @@ final class FXChain {
             delay.process(&l, &r)
             reverb.process(&l, &r)
 
-            l *= masterSmooth
-            r *= masterSmooth
+            l *= mG
+            r *= mG
             limiter.process(&l, &r)
 
-            analyzer.process((l + r) * 0.5)
+            if runSpectrum {
+                analyzer.process((l + r) * 0.5)
+            }
             outPk = max(outPk, max(abs(l), abs(r)))
             left[i] = l
             right[i] = r

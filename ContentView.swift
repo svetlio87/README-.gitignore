@@ -43,7 +43,7 @@ struct ContentView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("S-MAN MIXER FX")
+                    Text("S-MAN MIX FX")
                         .font(.system(size: 13, weight: .bold))
                         .tracking(2)
                         .foregroundColor(.white)
@@ -107,6 +107,7 @@ struct ContentView: View {
                     .padding(.vertical, 10)
                 }
                 .onChange(of: currentPage) { page in
+                    vm.activePageIndex = page
                     withAnimation(.easeInOut(duration: 0.2)) {
                         proxy.scrollTo(page, anchor: .center)
                     }
@@ -142,6 +143,9 @@ struct MainPageView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
+                // Live Output Scope Graphic
+                mainScopeCard.frame(height: 64)
+
                 // Audio Route + Input Channel Mode + Buffer 32/64/128
                 VStack(spacing: 8) {
                     HStack {
@@ -244,6 +248,33 @@ struct MainPageView: View {
             .padding(14)
         }
     }
+
+    private var mainScopeCard: some View {
+        Canvas { ctx, size in
+            let bg = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 14)
+            ctx.fill(bg, with: .color(Color(hex: 0x0B0E14)))
+
+            let mid = size.height / 2
+            var axis = Path()
+            axis.move(to: CGPoint(x: 0, y: mid))
+            axis.addLine(to: CGPoint(x: size.width, y: mid))
+            ctx.stroke(axis, with: .color(Color.white.opacity(0.10)), lineWidth: 1)
+
+            let hist = vm.mainScopeHistory
+            guard !hist.isEmpty else { return }
+            let stepW = size.width / CGFloat(hist.count)
+            for i in hist.indices {
+                let amp = CGFloat(hist[i]) * (size.height * 0.42)
+                let x = (CGFloat(i) + 0.5) * stepW
+                var bar = Path()
+                bar.move(to: CGPoint(x: x, y: mid - max(2, amp)))
+                bar.addLine(to: CGPoint(x: x, y: mid + max(2, amp)))
+                let col: Color = hist[i] > 0.92 ? Color(hex: 0xFF4D4D) : (hist[i] > 0.75 ? Color(hex: 0xFFD166) : Color(hex: 0x4AA3FF))
+                ctx.stroke(bar, with: .color(vm.isRunning ? col : Color.white.opacity(0.15)),
+                           style: StrokeStyle(lineWidth: max(2, stepW * 0.55), lineCap: .round))
+            }
+        }
+    }
 }
 
 struct VerticalStudioFader: View {
@@ -309,7 +340,7 @@ struct VerticalStudioFader: View {
     }
 }
 
-// MARK: - 1. S-Man Gate Page
+// MARK: - 1. S-Man Gate Page (Scrolling Gate Graph + FX Volume)
 
 struct GatePageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -317,6 +348,9 @@ struct GatePageView: View {
         ScrollView {
             VStack(spacing: 12) {
                 SectionHeader(title: "S-Man Gate", subtitle: "Noise gate & stage cleanup", accent: Color(hex: 0x3DDC97), isOn: $vm.params.gateOn)
+
+                gateEnvelopeGraph.frame(height: 130)
+
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         Text(vm.params.gateOn ? (vm.gateOpen ? "OPEN" : "CLOSED") : "BYPASS")
@@ -338,13 +372,77 @@ struct GatePageView: View {
                     ParamSlider(title: "ATTACK", value: $vm.params.gateAttackMs, range: 0.1...5, tint: Color(hex: 0x3DDC97), text: String(format: "%.1f ms", vm.params.gateAttackMs))
                     ParamSlider(title: "HOLD", value: $vm.params.gateHoldMs, range: 5...100, tint: Color(hex: 0x3DDC97), text: "\(Int(vm.params.gateHoldMs)) ms")
                     ParamSlider(title: "RELEASE", value: $vm.params.gateReleaseMs, range: 20...300, tint: Color(hex: 0x3DDC97), text: "\(Int(vm.params.gateReleaseMs)) ms")
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.gateLevelDb, range: -24...12, tint: Color(hex: 0x3DDC97), text: String(format: "%+.1f dB", vm.params.gateLevelDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
     }
+
+    private var gateEnvelopeGraph: some View {
+        Canvas { ctx, size in
+            let bg = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 16)
+            ctx.fill(bg, with: .color(Color(hex: 0x0B0E14)))
+
+            let yOf: (Float) -> CGFloat = { db in
+                let norm = clampF((db + 70) / 70, 0, 1)
+                return size.height - 10 - CGFloat(norm) * (size.height - 20)
+            }
+
+            for dbLine in [-60, -40, -20] {
+                let y = yOf(Float(dbLine))
+                var g = Path()
+                g.move(to: CGPoint(x: 0, y: y))
+                g.addLine(to: CGPoint(x: size.width, y: y))
+                ctx.stroke(g, with: .color(Color.white.opacity(0.06)), lineWidth: 1)
+            }
+
+            let hist = vm.gateHistory
+            let openHist = vm.gateOpenHistory
+            if hist.count >= 2 {
+                var fillPath = Path()
+                var trace = Path()
+                for i in hist.indices {
+                    let x = CGFloat(i) / CGFloat(hist.count - 1) * size.width
+                    let y = yOf(hist[i])
+                    if i == 0 {
+                        trace.move(to: CGPoint(x: x, y: y))
+                        fillPath.move(to: CGPoint(x: x, y: size.height))
+                        fillPath.addLine(to: CGPoint(x: x, y: y))
+                    } else {
+                        trace.addLine(to: CGPoint(x: x, y: y))
+                        fillPath.addLine(to: CGPoint(x: x, y: y))
+                    }
+                    if i < openHist.count && openHist[i] && vm.params.gateOn {
+                        let dot = Path(CGRect(x: x - 1.5, y: size.height - 5, width: 3, height: 3))
+                        ctx.fill(dot, with: .color(Color(hex: 0x3DDC97)))
+                    }
+                }
+                fillPath.addLine(to: CGPoint(x: size.width, y: size.height))
+                fillPath.closeSubpath()
+                ctx.fill(fillPath, with: .linearGradient(
+                    Gradient(colors: [Color(hex: 0x3DDC97).opacity(0.32), Color(hex: 0x3DDC97).opacity(0.03)]),
+                    startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: 0, y: size.height)
+                ))
+                ctx.stroke(trace, with: .color(vm.params.gateOn ? Color(hex: 0x3DDC97) : .gray), lineWidth: 2.2)
+            }
+
+            let thrY = yOf(vm.params.gateThreshDb)
+            var thrLine = Path()
+            thrLine.move(to: CGPoint(x: 0, y: thrY))
+            thrLine.addLine(to: CGPoint(x: size.width, y: thrY))
+            ctx.stroke(thrLine, with: .color(Color(hex: 0xFFD166)), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+
+            let closeY = yOf(vm.params.gateThreshDb - vm.params.gateHystDb)
+            var closeLine = Path()
+            closeLine.move(to: CGPoint(x: 0, y: closeY))
+            closeLine.addLine(to: CGPoint(x: size.width, y: closeY))
+            ctx.stroke(closeLine, with: .color(Color.white.opacity(0.35)), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+        }
+    }
 }
 
-// MARK: - 2. S-Man EQ Page (Grid + Live Spectrum + Selected Fill + Draggable Bands)
+// MARK: - 2. S-Man EQ Page (Grid + Live Spectrum + Selected Fill + Draggable Bands + FX Volume)
 
 struct SManEQPageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -400,6 +498,7 @@ struct SManEQPageView: View {
                     ParamSlider(title: "GAIN", value: $vm.params.eqBands[selectedBand].gainDb, range: -18...18, tint: Color(hex: 0x31C6FF), text: String(format: "%+.1f dB", vm.params.eqBands[selectedBand].gainDb))
                     ParamSlider(title: "Q", value: $vm.params.eqBands[selectedBand].q, range: 0.2...12, tint: Color(hex: 0x31C6FF), text: String(format: "%.2f", vm.params.eqBands[selectedBand].q))
                     ParamSlider(title: "LOW CUT", value: $vm.params.hpfHz, range: 20...200, tint: Color(hex: 0x31C6FF), text: "\(Int(vm.params.hpfHz)) Hz")
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.eqLevelDb, range: -24...12, tint: Color(hex: 0x31C6FF), text: String(format: "%+.1f dB", vm.params.eqLevelDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
@@ -562,7 +661,7 @@ private struct SManEQGraphView: View {
     }
 }
 
-// MARK: - 3. S-Man Comp Page (Interactive Transfer Curve + Live Dot)
+// MARK: - 3. S-Man Comp Page (Transfer Curve + FX Volume)
 
 struct CompPageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -587,6 +686,7 @@ struct CompPageView: View {
                     ParamSlider(title: "ATTACK", value: $vm.params.compAttackMs, range: 5...50, tint: Color(hex: 0xFF9F43), text: "\(Int(vm.params.compAttackMs)) ms")
                     ParamSlider(title: "RELEASE", value: $vm.params.compReleaseMs, range: 40...300, tint: Color(hex: 0xFF9F43), text: "\(Int(vm.params.compReleaseMs)) ms")
                     ParamSlider(title: "MAKEUP", value: $vm.params.compMakeupDb, range: 0...12, tint: Color(hex: 0xFF9F43), text: String(format: "%.1f dB", vm.params.compMakeupDb))
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.compLevelDb, range: -24...12, tint: Color(hex: 0xFF9F43), text: String(format: "%+.1f dB", vm.params.compLevelDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
@@ -637,7 +737,6 @@ struct CompPageView: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 16))
 
-                // Draggable Threshold & Ratio Handles
                 ForEach([0, 1], id: \.self) { idx in
                     let px = idx == 0 ? xOf(vm.params.compThreshDb) : xOf(0)
                     let py = idx == 0 ? yOf(vm.params.compThreshDb) : yOf(compOutDb(0))
@@ -674,7 +773,7 @@ struct CompPageView: View {
     }
 }
 
-// MARK: - 4. S-Man Saturation Page (Waveshaper Curve)
+// MARK: - 4. S-Man Saturation Page (Waveshaper Curve + FX Volume)
 
 struct SaturationPageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -696,7 +795,7 @@ struct SaturationPageView: View {
                     ParamSlider(title: "WARMTH", value: $vm.params.satWarmth, range: 0...1, tint: Color(hex: 0xFF5D8F), text: "\(Int(vm.params.satWarmth * 100))%")
                     ParamSlider(title: "TONE", value: $vm.params.satToneHz, range: 2000...20000, tint: Color(hex: 0xFF5D8F), text: "\(Int(vm.params.satToneHz)) Hz")
                     ParamSlider(title: "MIX", value: $vm.params.satMix, range: 0...1, tint: Color(hex: 0xFF5D8F), text: "\(Int(vm.params.satMix * 100))%")
-                    ParamSlider(title: "LEVEL", value: $vm.params.satLevelDb, range: -12...6, tint: Color(hex: 0xFF5D8F), text: String(format: "%+.1f dB", vm.params.satLevelDb))
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.satLevelDb, range: -24...12, tint: Color(hex: 0xFF5D8F), text: String(format: "%+.1f dB", vm.params.satLevelDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
@@ -728,11 +827,16 @@ struct SaturationPageView: View {
                 if s == 0 { curve.move(to: pt) } else { curve.addLine(to: pt) }
             }
             ctx.stroke(curve, with: .color(vm.params.satOn ? Color(hex: 0xFF5D8F) : .gray), lineWidth: 3)
+
+            if vm.params.cabSimOn {
+                ctx.draw(Text("CAB SIM").font(.system(size: 9, weight: .bold)).foregroundColor(Color(hex: 0x3DDC97)),
+                         at: CGPoint(x: size.width - 10, y: 12), anchor: .trailing)
+            }
         }
     }
 }
 
-// MARK: - 5. S-Man Tape Page (Animated Spinning Reels)
+// MARK: - 5. S-Man Tape Page (Animated Spinning Reels + Mix + FX Volume)
 
 struct TapePageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -741,7 +845,7 @@ struct TapePageView: View {
             VStack(spacing: 12) {
                 SectionHeader(title: "S-Man Tape", subtitle: "Analog tape warmth, bump & flutter", accent: Color(hex: 0xF2B66D), isOn: $vm.params.tapeOn)
 
-                TapeReelsView(spinning: vm.isRunning && vm.params.tapeOn)
+                TapeReelsView(spinning: vm.isRunning && vm.params.tapeOn, flutter: vm.params.tapeFlutter)
                     .frame(height: 115)
                     .padding(10)
                     .background(Color(hex: 0x10141D))
@@ -752,6 +856,8 @@ struct TapePageView: View {
                     ParamSlider(title: "BUMP", value: $vm.params.tapeBumpDb, range: 0...6, tint: Color(hex: 0xF2B66D), text: String(format: "%.1f dB", vm.params.tapeBumpDb))
                     ParamSlider(title: "TONE", value: $vm.params.tapeToneHz, range: 3000...20000, tint: Color(hex: 0xF2B66D), text: "\(Int(vm.params.tapeToneHz)) Hz")
                     ParamSlider(title: "FLUTTER", value: $vm.params.tapeFlutter, range: 0...1, tint: Color(hex: 0xF2B66D), text: "\(Int(vm.params.tapeFlutter * 100))%")
+                    ParamSlider(title: "MIX", value: $vm.params.tapeMix, range: 0...1, tint: Color(hex: 0x3DDC97), text: "\(Int(vm.params.tapeMix * 100))%")
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.tapeLevelDb, range: -24...12, tint: Color(hex: 0xF2B66D), text: String(format: "%+.1f dB", vm.params.tapeLevelDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
@@ -760,10 +866,13 @@ struct TapePageView: View {
 
 private struct TapeReelsView: View {
     let spinning: Bool
+    let flutter: Float
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !spinning)) { timeline in
-            let angle = spinning ? timeline.date.timeIntervalSinceReferenceDate * 2.8 : 0
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            let wobble = spinning ? Double(flutter) * 0.25 * sin(t * 9.0) : 0
+            let angle = spinning ? (t * 2.8 + wobble) : 0
             Canvas { ctx, size in
                 let accent = Color(hex: 0xF2B66D)
                 let y = size.height * 0.46
@@ -773,7 +882,11 @@ private struct TapeReelsView: View {
 
                 var tapePath = Path()
                 tapePath.move(to: CGPoint(x: cL.x - r * 0.5, y: size.height * 0.88))
-                tapePath.addLine(to: CGPoint(x: cR.x + r * 0.5, y: size.height * 0.88))
+                let sag = spinning ? CGFloat(sin(t * 7.5) * Double(flutter) * 4.0) : 0
+                tapePath.addQuadCurve(
+                    to: CGPoint(x: cR.x + r * 0.5, y: size.height * 0.88),
+                    control: CGPoint(x: size.width * 0.5, y: size.height * 0.88 + sag)
+                )
                 ctx.stroke(tapePath, with: .color(accent.opacity(0.45)), lineWidth: 3)
 
                 for center in [cL, cR] {
@@ -800,7 +913,7 @@ private struct TapeReelsView: View {
     }
 }
 
-// MARK: - 6. S-Man Delay Page (L/R Tap Visualizer)
+// MARK: - 6. S-Man Delay Page (Taps + Dedicated Wet EQ + FX Volume)
 
 struct DelayPageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -856,7 +969,7 @@ struct DelayPageView: View {
                     }
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
 
-                delayTapCanvas.frame(height: 140)
+                delayTapCanvas.frame(height: 135)
 
                 VStack(spacing: 10) {
                     if !vm.params.delaySync {
@@ -865,10 +978,31 @@ struct DelayPageView: View {
                         ParamSlider(title: "BPM", value: $vm.params.delayBpm, range: 40...240, tint: Color(hex: 0x00E5FF), text: "\(Int(vm.params.delayBpm)) BPM")
                     }
                     ParamSlider(title: "FEEDBACK", value: $vm.params.delayFeedback, range: 0...0.9, tint: Color(hex: 0x00E5FF), text: "\(Int(vm.params.delayFeedback * 100))%")
-                    ParamSlider(title: "LOW CUT", value: $vm.params.delayLowCutHz, range: 40...800, tint: Color(hex: 0x00E5FF), text: "\(Int(vm.params.delayLowCutHz)) Hz")
-                    ParamSlider(title: "HIGH CUT", value: $vm.params.delayHighCutHz, range: 1200...16000, tint: Color(hex: 0x00E5FF), text: "\(Int(vm.params.delayHighCutHz)) Hz")
                     ParamSlider(title: "MOD / WIDTH", value: $vm.params.delayModWidth, range: 0...1, tint: Color(hex: 0x00E5FF), text: "\(Int(vm.params.delayModWidth * 100))%")
                     ParamSlider(title: "MIX", value: $vm.params.delayMix, range: 0...0.8, tint: Color(hex: 0x3DDC97), text: "\(Int(vm.params.delayMix * 100))%")
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.delayLevelDb, range: -24...12, tint: Color(hex: 0x00E5FF), text: String(format: "%+.1f dB", vm.params.delayLevelDb))
+                }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
+
+                // Dedicated Delay Wet EQ
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("S-MAN DELAY EQ (WET)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(hex: 0x00E5FF))
+                    WetEQCurveCanvas(
+                        sampleRate: vm.actualSampleRate,
+                        lowCutHz: vm.params.delayLowCutHz,
+                        highCutHz: vm.params.delayHighCutHz,
+                        lowFreq: 160, lowDb: vm.params.delayEqLowDb,
+                        midFreq: 1000, midDb: vm.params.delayEqMidDb,
+                        highFreq: 5500, highDb: vm.params.delayEqHighDb,
+                        accent: Color(hex: 0x00E5FF),
+                        enabled: vm.params.delayOn
+                    ).frame(height: 68)
+                    ParamSlider(title: "LOW CUT", value: $vm.params.delayLowCutHz, range: 40...800, tint: Color(hex: 0x00E5FF), text: "\(Int(vm.params.delayLowCutHz)) Hz")
+                    ParamSlider(title: "HIGH CUT", value: $vm.params.delayHighCutHz, range: 1200...16000, tint: Color(hex: 0x00E5FF), text: "\(Int(vm.params.delayHighCutHz)) Hz")
+                    ParamSlider(title: "EQ LOW", value: $vm.params.delayEqLowDb, range: -12...12, tint: Color(hex: 0x00E5FF), text: String(format: "%+.1f dB", vm.params.delayEqLowDb))
+                    ParamSlider(title: "EQ MID", value: $vm.params.delayEqMidDb, range: -12...12, tint: Color(hex: 0x00E5FF), text: String(format: "%+.1f dB", vm.params.delayEqMidDb))
+                    ParamSlider(title: "EQ HIGH", value: $vm.params.delayEqHighDb, range: -12...12, tint: Color(hex: 0x00E5FF), text: String(format: "%+.1f dB", vm.params.delayEqHighDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
@@ -889,8 +1023,8 @@ struct DelayPageView: View {
             ctx.draw(Text("R").font(.system(size: 10, weight: .bold)).foregroundColor(Color(hex: 0x8B93A7)), at: CGPoint(x: 10, y: size.height - 12))
 
             var dry = Path()
-            dry.move(to: CGPoint(x: 26, y: mid - 38))
-            dry.addLine(to: CGPoint(x: 26, y: mid + 38))
+            dry.move(to: CGPoint(x: 26, y: mid - 36))
+            dry.addLine(to: CGPoint(x: 26, y: mid + 36))
             ctx.stroke(dry, with: .color(Color.white.opacity(0.85)), lineWidth: 3)
 
             let ms = vm.params.effectiveDelayMs
@@ -938,7 +1072,7 @@ struct DelayPageView: View {
     }
 }
 
-// MARK: - 7. S-Man Reverb Page (Envelope Visualizer)
+// MARK: - 7. S-Man Reverb Page (Envelope + Dedicated Wet EQ + FX Volume)
 
 struct ReverbPageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -958,16 +1092,37 @@ struct ReverbPageView: View {
                     }
                 }.padding(10).background(Color(hex: 0x10141D)).cornerRadius(14)
 
-                reverbEnvelopeCanvas.frame(height: 140)
+                reverbEnvelopeCanvas.frame(height: 135)
 
                 VStack(spacing: 10) {
                     ParamSlider(title: "SIZE", value: $vm.params.revSize, range: 0.1...1.0, tint: Color(hex: 0xA77BFF), text: "\(Int(vm.params.revSize * 100))%")
                     ParamSlider(title: "DECAY", value: $vm.params.revDecaySec, range: 0.3...6.0, tint: Color(hex: 0xA77BFF), text: String(format: "%.2f s", vm.params.revDecaySec))
                     ParamSlider(title: "PRE-DELAY", value: $vm.params.revPreDelayMs, range: 0...120, tint: Color(hex: 0xA77BFF), text: "\(Int(vm.params.revPreDelayMs)) ms")
-                    ParamSlider(title: "DAMPING", value: $vm.params.revDampingHz, range: 1500...16000, tint: Color(hex: 0xA77BFF), text: "\(Int(vm.params.revDampingHz)) Hz")
-                    ParamSlider(title: "LOW CUT", value: $vm.params.revLowCutHz, range: 40...500, tint: Color(hex: 0xA77BFF), text: "\(Int(vm.params.revLowCutHz)) Hz")
                     ParamSlider(title: "WIDTH", value: $vm.params.revWidth, range: 0...1, tint: Color(hex: 0xA77BFF), text: "\(Int(vm.params.revWidth * 100))%")
                     ParamSlider(title: "MIX", value: $vm.params.revMix, range: 0...0.8, tint: Color(hex: 0x3DDC97), text: "\(Int(vm.params.revMix * 100))%")
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.revLevelDb, range: -24...12, tint: Color(hex: 0xA77BFF), text: String(format: "%+.1f dB", vm.params.revLevelDb))
+                }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
+
+                // Dedicated Reverb Wet EQ
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("S-MAN REVERB EQ (WET)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(hex: 0xA77BFF))
+                    WetEQCurveCanvas(
+                        sampleRate: vm.actualSampleRate,
+                        lowCutHz: vm.params.revLowCutHz,
+                        highCutHz: vm.params.revDampingHz,
+                        lowFreq: 180, lowDb: vm.params.revEqLowDb,
+                        midFreq: 1200, midDb: vm.params.revEqMidDb,
+                        highFreq: 6000, highDb: vm.params.revEqHighDb,
+                        accent: Color(hex: 0xA77BFF),
+                        enabled: vm.params.revOn
+                    ).frame(height: 68)
+                    ParamSlider(title: "LOW CUT", value: $vm.params.revLowCutHz, range: 40...500, tint: Color(hex: 0xA77BFF), text: "\(Int(vm.params.revLowCutHz)) Hz")
+                    ParamSlider(title: "DAMPING", value: $vm.params.revDampingHz, range: 1500...16000, tint: Color(hex: 0xA77BFF), text: "\(Int(vm.params.revDampingHz)) Hz")
+                    ParamSlider(title: "EQ LOW", value: $vm.params.revEqLowDb, range: -12...12, tint: Color(hex: 0xA77BFF), text: String(format: "%+.1f dB", vm.params.revEqLowDb))
+                    ParamSlider(title: "EQ MID", value: $vm.params.revEqMidDb, range: -12...12, tint: Color(hex: 0xA77BFF), text: String(format: "%+.1f dB", vm.params.revEqMidDb))
+                    ParamSlider(title: "EQ HIGH", value: $vm.params.revEqHighDb, range: -12...12, tint: Color(hex: 0xA77BFF), text: String(format: "%+.1f dB", vm.params.revEqHighDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
@@ -1034,7 +1189,56 @@ struct ReverbPageView: View {
     }
 }
 
-// MARK: - 8. S-Man Limiter Page
+private struct WetEQCurveCanvas: View {
+    let sampleRate: Float
+    let lowCutHz: Float
+    let highCutHz: Float
+    let lowFreq: Float
+    let lowDb: Float
+    let midFreq: Float
+    let midDb: Float
+    let highFreq: Float
+    let highDb: Float
+    let accent: Color
+    let enabled: Bool
+
+    var body: some View {
+        Canvas { ctx, size in
+            let bg = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 12)
+            ctx.fill(bg, with: .color(Color(hex: 0x0B0E14)))
+
+            var zero = Path()
+            zero.move(to: CGPoint(x: 0, y: size.height / 2))
+            zero.addLine(to: CGPoint(x: size.width, y: size.height / 2))
+            ctx.stroke(zero, with: .color(Color.white.opacity(0.14)), lineWidth: 1)
+
+            var hp = BiquadFilter(), lp = BiquadFilter(), lf = BiquadFilter(), mf = BiquadFilter(), hf = BiquadFilter()
+            hp.configure(type: .highPass, sampleRate: sampleRate, freq: lowCutHz, gainDb: 0, q: 0.707)
+            lp.configure(type: .lowPass, sampleRate: sampleRate, freq: highCutHz, gainDb: 0, q: 0.707)
+            lf.configure(type: .lowShelf, sampleRate: sampleRate, freq: lowFreq, gainDb: lowDb, q: 0.707)
+            mf.configure(type: .bell, sampleRate: sampleRate, freq: midFreq, gainDb: midDb, q: 0.9)
+            hf.configure(type: .highShelf, sampleRate: sampleRate, freq: highFreq, gainDb: highDb, q: 0.707)
+
+            var path = Path()
+            let steps = 60
+            for s in 0...steps {
+                let frac = CGFloat(s) / CGFloat(steps)
+                let f = 20.0 * powf(1000.0, Float(frac))
+                let db = hp.magnitudeDb(at: f, sampleRate: sampleRate)
+                    + lp.magnitudeDb(at: f, sampleRate: sampleRate)
+                    + lf.magnitudeDb(at: f, sampleRate: sampleRate)
+                    + mf.magnitudeDb(at: f, sampleRate: sampleRate)
+                    + hf.magnitudeDb(at: f, sampleRate: sampleRate)
+                let y = size.height / 2 - CGFloat(clampF(db, -15, 15) / 15.0) * (size.height * 0.44)
+                let pt = CGPoint(x: frac * size.width, y: y)
+                if s == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+            }
+            ctx.stroke(path, with: .color(enabled ? accent : .gray), lineWidth: 2.2)
+        }
+    }
+}
+
+// MARK: - 8. S-Man Limiter Page (Scrolling Peak + GR Graph + FX Volume)
 
 struct LimiterPageView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -1042,6 +1246,9 @@ struct LimiterPageView: View {
         ScrollView {
             VStack(spacing: 12) {
                 SectionHeader(title: "S-Man Limiter", subtitle: "Lookahead brickwall protection", accent: Color(hex: 0xFF5A5A), isOn: nil)
+
+                limiterScopeGraph.frame(height: 130)
+
                 VStack(spacing: 8) {
                     HStack {
                         Text("OUTPUT").font(.system(size: 10, weight: .bold)).foregroundColor(Color(hex: 0x8B93A7))
@@ -1063,13 +1270,56 @@ struct LimiterPageView: View {
 
                 VStack(spacing: 10) {
                     ParamSlider(title: "CEILING", value: $vm.params.limiterCeilingDb, range: -6...0, tint: Color(hex: 0xFF5A5A), text: String(format: "%.1f dB", vm.params.limiterCeilingDb))
+                    ParamSlider(title: "FX VOLUME", value: $vm.params.limiterLevelDb, range: -24...6, tint: Color(hex: 0xFF5A5A), text: String(format: "%+.1f dB", vm.params.limiterLevelDb))
                 }.padding(12).background(Color(hex: 0x10141D)).cornerRadius(16)
             }.padding(14)
         }
     }
+
+    private var limiterScopeGraph: some View {
+        Canvas { ctx, size in
+            let bg = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 16)
+            ctx.fill(bg, with: .color(Color(hex: 0x0B0E14)))
+
+            let yOf: (Float) -> CGFloat = { db in
+                let norm = clampF((db + 60) / 60, 0, 1)
+                return size.height - 10 - CGFloat(norm) * (size.height - 20)
+            }
+
+            let outHist = vm.limOutHistory
+            let grHist = vm.limGrHistory
+            if outHist.count >= 2 {
+                var outPath = Path()
+                var grPath = Path()
+                for i in outHist.indices {
+                    let x = CGFloat(i) / CGFloat(outHist.count - 1) * size.width
+                    let oy = yOf(outHist[i])
+                    let gy = 8 + CGFloat(clampF(grHist[i] / 12.0, 0, 1)) * (size.height * 0.65)
+                    if i == 0 {
+                        outPath.move(to: CGPoint(x: x, y: oy))
+                        grPath.move(to: CGPoint(x: x, y: 8))
+                        grPath.addLine(to: CGPoint(x: x, y: gy))
+                    } else {
+                        outPath.addLine(to: CGPoint(x: x, y: oy))
+                        grPath.addLine(to: CGPoint(x: x, y: gy))
+                    }
+                }
+                grPath.addLine(to: CGPoint(x: size.width, y: 8))
+                grPath.closeSubpath()
+                ctx.fill(grPath, with: .color(Color(hex: 0xFF5A5A).opacity(0.32)))
+                ctx.stroke(outPath, with: .color(Color(hex: 0x3DDC97)), lineWidth: 2.2)
+            }
+
+            let ceilY = yOf(vm.params.limiterCeilingDb)
+            var ceilLine = Path()
+            ceilLine.move(to: CGPoint(x: 0, y: ceilY))
+            ceilLine.addLine(to: CGPoint(x: size.width, y: ceilY))
+            ctx.stroke(ceilLine, with: .color(Color(hex: 0xFF5A5A)), style: StrokeStyle(lineWidth: 1.6, dash: [5, 4]))
+        }
+    }
 }
 
-// MARK: - 9. S-Man Ensemble Page (Realistic Concert Stereo Stage & Layer Distribution)
+// MARK: - 9. S-Man Ensemble Page (Realistic Concert Stereo Stage + FX Volume)
 
 struct EnsemblePagedView: View {
     @ObservedObject var vm: DarbukaEngine
@@ -1118,6 +1368,7 @@ struct EnsemblePagedView: View {
 
                         VStack(spacing: 10) {
                             ParamSlider(title: "Mix (Wet / Dry)", value: $vm.params.ensemble.mix, range: 0...1, tint: Color(hex: 0x3DDC97), text: "\(Int(round(vm.params.ensemble.mix * 100)))%")
+                            ParamSlider(title: "FX VOLUME", value: $vm.params.ensemble.levelDb, range: -24...12, tint: Color(hex: 0xC57BFF), text: String(format: "%+.1f dB", vm.params.ensemble.levelDb))
                             ParamSlider(title: "Group Detune", value: $vm.params.ensemble.detuneCents, range: 0...25, tint: Color(hex: 0xC57BFF), text: String(format: "%.1f ct", vm.params.ensemble.detuneCents))
                             ParamSlider(title: "Stereo Width", value: $vm.params.ensemble.stereoWidth, range: 0...1, tint: Color(hex: 0xFF9F43), text: "\(Int(round(vm.params.ensemble.stereoWidth * 100)))%")
                             HStack(spacing: 6) {
@@ -1245,7 +1496,6 @@ struct StereoStageMap: View {
         let bg = Path(roundedRect: CGRect(origin: .zero, size: size), cornerRadius: 12)
         ctx.fill(bg, with: .color(Color(hex: 0x0B0E14)))
 
-        // Spotlight cone
         ctx.fill(
             bg,
             with: .radialGradient(
@@ -1256,7 +1506,6 @@ struct StereoStageMap: View {
             )
         )
 
-        // Perspective stereo arc rings (Front / Mid / Back)
         for dFrac in [0.34, 0.60, 0.88] {
             let span = size.width * CGFloat(dFrac) * 0.52
             let sideY = origin.y + size.height * CGFloat(dFrac) * 0.56
@@ -1270,7 +1519,6 @@ struct StereoStageMap: View {
             ctx.stroke(arc, with: .color(Color.white.opacity(0.09)), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
         }
 
-        // L / Center / R stereo fan lines
         for targetX in [size.width * 0.08, size.width * 0.5, size.width * 0.92] {
             var ray = Path()
             ray.move(to: origin)
@@ -1278,7 +1526,6 @@ struct StereoStageMap: View {
             ctx.stroke(ray, with: .color(Color.white.opacity(targetX == size.width * 0.5 ? 0.14 : 0.07)), lineWidth: 1)
         }
 
-        // Acoustic connection rays from active voices to front stage
         for i in voices.indices {
             let v = voices[i]
             guard enabled && v.isActive else { continue }
@@ -1289,7 +1536,6 @@ struct StereoStageMap: View {
             ctx.stroke(link, with: .color(voiceColor(v.octave).opacity(0.24 * Double(v.volume))), lineWidth: 1.4)
         }
 
-        // Lead Performer Pulse + Node
         if isRunning {
             let pulse = CGFloat(10 + ((tNow * 1.6).truncatingRemainder(dividingBy: 1.0)) * 18)
             let alpha = 0.35 * (1.0 - ((tNow * 1.6).truncatingRemainder(dividingBy: 1.0)))

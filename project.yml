@@ -11,12 +11,13 @@ targets:
       - ContentView.swift
       - DSP.swift
       - DarbukaEngine.swift
+      - Assets.xcassets
     info:
       path: Info.plist
       properties:
-        CFBundleDisplayName: S-Man Mixer FX
-        CFBundleName: S-Man Mixer FX
-        NSMicrophoneUsageDescription: Microphone access is required for S-Man Mixer FX live audio processing.
+        CFBundleDisplayName: S-Man Mix Fx
+        CFBundleName: S-Man Mix Fx
+        NSMicrophoneUsageDescription: Microphone access is required for S-Man Mix Fx live audio processing.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -24,6 +25,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.sman.mixerfx
         PRODUCT_NAME: SManMixerFX
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.0"
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
